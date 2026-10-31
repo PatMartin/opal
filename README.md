@@ -1,5 +1,7 @@
 # OPAL — Open, Modular, Local-First AI Services
 
+![OPAL](opal.png)
+
 > **Listen. Talk. Look. Think. Act.**  Build an intelligent assistant by composing small, independently deployable, API-first services instead of accepting a single monolithic assistant, a particular model vendor, or a particular device.
 >
 > **Document scope:** architecture, philosophy, interfaces, contracts, deployment, operational behavior, command-line reference, end-to-end recipes, verification, and the future command surface. **Repository snapshot: 2026-10-29.** This is a comprehensive project-level README, not a replacement for each service's normative OpenAPI contract or its detailed CLI guide.
