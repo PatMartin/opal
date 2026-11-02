@@ -1,2162 +1,790 @@
-# OPAL — Open, Modular, Local-First AI Services
+# OPAL — Give Your AI Ears, Eyes, a Voice, and a Brain
 
 ![OPAL](opal.png)
 
-> **Listen. Talk. Look. Think. Act.**  Build an intelligent assistant by composing small, independently deployable, API-first services instead of accepting a single monolithic assistant, a particular model vendor, or a particular device.
+**Build an AI assistant that lives on your hardware, uses tools you choose, and grows one useful skill at a time.**
+
+Imagine telling your computer, “Turn on the kitchen lights,” and watching it happen. Or getting a spoken alert when a camera spots a visitor. Or asking an AI to investigate a computer problem, show the evidence, and request permission *before* changing anything.
+
+That is the idea behind **OPAL**: **Open, modular, local-first AI**.
+
+Instead of installing one enormous assistant and hoping it does everything, you choose the parts you need. Like building with LEGO, except some of the bricks talk, some watch cameras, and one might eventually explain why your printer hates you.
+
+> **Our promise:** Listen. Talk. Look. Think. Act. You stay in charge.
 >
-> **Document scope:** architecture, philosophy, interfaces, contracts, deployment, operational behavior, command-line reference, end-to-end recipes, verification, and the future command surface. **Repository snapshot: 2026-10-29.** This is a comprehensive project-level README, not a replacement for each service's normative OpenAPI contract or its detailed CLI guide.
+> **Reality check (November 2026):** Listen, Talk, and Event have Python implementations. Look has a detailed API design but is **not yet a running service**. Think is a planned service. Examples below say **WORKS TODAY**, **NEEDS GLUE**, or **FUTURE DESIGN** so you know what you can actually run.
 
-[Why OPAL?](#why-opal) · [Architecture](#the-architecture) · [Repository map](#repositories-and-implementation-status) · [Unified command tree](#the-unified-opal-command-tree) · [Installation](#getting-started) · [Listen CLI](#opal-listen--the-ears) · [Talk CLI](#opal-talk--the-voice) · [Event CLI](#opal-event--the-nervous-system) · [Look vision](#opal-look--the-eyes-planned) · [Think vision](#opal-think--the-brain-planned) · [Recipes](#cross-service-recipes) · [Contracts](#contracts-versioning-and-compatibility) · [Roadmap](#roadmap-and-known-gaps)
-
----
-
-## Read this first: current implementation versus vision
-
-OPAL is simultaneously **an architectural vision**, **a set of independently versioned API contracts**, and **working Python implementations**. Those are related, but they are not interchangeable. This README marks commands as follows:
-
-- **`[LIVE]`** — implemented in the service repository and documented by its actual CLI, subject to installing and running that service and its dependencies.
-- **`[DESIGN]`** — proposed in the umbrella `opal` documentation or the service design; **not currently executable**.
-- **`[FUTURE]`** — a recommendation or extension beyond the current published implementation, deliberately separated from the audited interfaces.
-
-The **large tree below is a unified *target* command tree**, deliberately combining the existing Listen/Talk/Event command hierarchies with the planned Look/Think hierarchies. It is not evidence that a unified installer, one executable, or every tree node exists today.
-
-**Important packaging caveat:** the three currently implemented Python projects independently register a console script named `opal` in their `pyproject.toml`. Installing all three into a single Python environment can cause the last-installed distribution to overwrite the `opal` entry point. The `opal` umbrella repository is documentation-only today and does not provide a dispatcher package that unifies those entry points. Use separate environments, the standalone `opal-event` / `opal-talk` scripts where applicable, or an explicit wrapper you own until a real suite-level dispatcher is created. **Do not interpret `pip install -e` of all three services as a working unified CLI installer.** Listen's independently packaged CLI uses `opal listen ...` when its entry point is selected.
-
-## Why OPAL?
-
-Most assistant stacks bind everything together: the microphone handler knows the speech library; the intent handler knows the automation backend; the voice interface knows the TTS engine; vision is intertwined with model-specific data types; and the agent can perform side effects with little inspection or control. A replacement model, a new device, or a security boundary change then becomes a system-wide rewrite.
-
-OPAL makes a different tradeoff. Each capability has a **small conceptual vocabulary**, a **stable HTTP contract**, an **implementation behind that contract**, and **multiple independent interfaces** to the same capabilities. Services communicate over the network and publish events. The pieces can live on a Raspberry Pi, on a local GPU server, in containers, or on different hosts.
-
-### Ten governing principles
-
-1. **API-first, not code-first.** Design and validate an OpenAPI 3.1 contract before implementation. Make interface changes explicit rather than incidental.
-2. **Contract/API/CLI/GUI parity.** A feature should be callable over REST, scriptable from a Typer CLI, and available through the web UI where appropriate. CLI and UI clients do not bypass REST to mutate local internals.
-3. **Engine independence.** The public nouns are *intents, voices, sources, models, agents, rules*, and similar OPAL abstractions — never vendor-specific command-line flags or proprietary Python types.
-4. **Local-first and privacy-oriented.** Offline Vosk/Piper/Kokoro and LAN-hosted model inference are first-class choices. Hosted inference is an explicit optional provider choice, not the architecture's center.
-5. **Small, replaceable services.** A Raspberry Pi should be able to capture audio while a GPU host performs expensive inference without pretending every node has identical resources.
-6. **Events decouple producers from consumers.** New subscribers can be added without modifying wakeword, synthesis, or vision code. REST remains the control and query plane; ZeroMQ provides an event transport.
-7. **Explicit resource bounds.** Audio buffers, execution queues, model caches, database retention, input sizes, and worker counts have limits. Overload must be visible, not infinite.
-8. **Inspectable behavior.** Health endpoints, logs, failed utterances, performance histories, execution records, correlation IDs, and test/dry-run modes make the system explainable.
-9. **Controlled mutations.** Strong ETags protect configuration; rules/actions can be tested before enabling; future agent side effects must be authorized independently of model intent.
-10. **Mockable, testable implementations.** Fake providers, golden audio fixtures, contract checks, CLI-to-REST tests, integration tests and deterministic fixtures should be standard practice.
-
-### Why separate sensory processing from reasoning?
-
-A phrase such as “computer, turn on the kitchen lights” often needs **no LLM**: a cheap, deterministic wakeword/STT/intent pipeline is faster, works offline, and is easier to test. “Who is at the front door, and should I tell someone?” may require computer vision plus rules or an agent. “Explain the last ten detections” may require event history and a language model. OPAL uses the least complex component capable of the task rather than routing everything through a large model.
-
-### What OPAL is not
-
-OPAL is not a single model, a cloud SaaS, a required home-automation product, a guaranteed-delivery message queue, or permission for autonomous agents to execute arbitrary instructions. **Event v1 is best effort, not Kafka**; **Talk synthesizes audio but does not play it**; **Look is not face recognition by default**; **Think is not a privileged shell masquerading as an agent**. These boundaries are features.
+[What is OPAL?](#meet-the-five-pieces) · [Try it](#five-minute-tour-of-the-working-pieces) · [Install](#getting-started) · [Adventures](#build-something-fun) · [Command tree](#the-big-command-tree) · [Under the hood](#how-opal-works) · [Roadmap](#whats-next)
 
 ---
 
-## Repositories and implementation status
+## The big idea, without the jargon
 
-The following seven `PatMartin/opal*` repositories were enumerated and inspected on GitHub. The independent service repositories are the sources of truth for *implemented* behavior; the umbrella repository describes the broader design.
+Most AI assistants arrive as one big package. You get the tools, models, and rules their maker picked.
 
-| Repository | Purpose | Source-observed state on 2026-10-29 | Key entry points |
-|---|---|---|---|
-| [`PatMartin/opal`](https://github.com/PatMartin/opal) | Suite narrative, conceptual user guide and unified CLI design | Documentation-only: `README.md`, `CLI.md`, `USER_GUIDE.md`, `why_opal.md`; no source package or bundled OpenAPI YAML in the current tree | [`CLI.md`](https://github.com/PatMartin/opal/blob/main/CLI.md) · [`why_opal.md`](https://github.com/PatMartin/opal/blob/main/why_opal.md) |
-| [`PatMartin/opal-api`](https://github.com/PatMartin/opal-api) | Published central OpenAPI contracts and linters | Three published contracts, **all `info.version: 1.4.0`**: Event, Listen and Talk. No published Look/Think YAML in this repository. | [`openapi/`](https://github.com/PatMartin/opal-api/tree/main/openapi) · [`README`](https://github.com/PatMartin/opal-api/blob/main/README.md) |
-| [`PatMartin/opal-listen`](https://github.com/PatMartin/opal-listen) | Offline wakeword + speech understanding, testing, diagnostics, events | Working FastAPI service/CLI and embedded static HTML UI; active local contract **1.3.0**; Python package version **0.1.0** | [`README`](https://github.com/PatMartin/opal-listen/blob/main/README.md) · [`CLI`](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md) · [`QUICKSTART`](https://github.com/PatMartin/opal-listen/blob/main/docs/QUICKSTART.md) |
-| [`PatMartin/opal-talk`](https://github.com/PatMartin/opal-talk) | Engine-neutral text-to-speech | Working FastAPI service, Typer CLI, React/Vite SPA; implementation and active contract **1.2.0** | [`README`](https://github.com/PatMartin/opal-talk/blob/main/README.md) · [`CLI`](https://github.com/PatMartin/opal-talk/blob/main/docs/CLI.md) · [`USER_GUIDE`](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) |
-| [`PatMartin/opal-event`](https://github.com/PatMartin/opal-event) | Best-effort XSUB/XPUB broker, rule engine and action runner | Working FastAPI service, Typer CLI, React/Vite SPA; implementation and local contract **1.2.0** | [`README`](https://github.com/PatMartin/opal-event/blob/main/README.md) · [`CLI`](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md) · [`ZeroMQ protocol`](https://github.com/PatMartin/opal-event/blob/main/specs/zeromq_protocol.md) |
-| [`PatMartin/opal-look`](https://github.com/PatMartin/opal-look) | Future computer-vision service | Repository exists but currently contains **no committed files**; vision ideas appear in umbrella documentation | [Repository](https://github.com/PatMartin/opal-look) · [planned command outline](https://github.com/PatMartin/opal/blob/main/CLI.md) |
-| [`PatMartin/opal-think`](https://github.com/PatMartin/opal-think) | Future LLM/agent runtime | Repository exists but currently contains **no committed files**; umbrella Think contract is expressly described as **incomplete/reconstructed** | [Repository](https://github.com/PatMartin/opal-think) · [planned command outline](https://github.com/PatMartin/opal/blob/main/CLI.md) |
+OPAL takes another route:
 
-**Version warning:** `opal-api` 1.4.0 should not be assumed runtime-compatible with the 1.2.0 Event/Talk implementations or the 1.3.0 Listen implementation merely because it is centrally published. Compare operation IDs, schemas, validation rules, responses, and tests before upgrading. The umbrella `opal/README.md` still describes a **v1.3.0 label/repackaging draft**, not a verified five-service rollout. Its references to five archived contracts do not mean those files are present in the current GitHub tree.
+- **Pick your hardware.** A Raspberry Pi can listen in one room while a GPU-equipped computer handles the heavy thinking.
+- **Pick your engines.** Use Vosk for speech recognition and Piper or Kokoro for speech. Switch engines without rewriting every app.
+- **Keep things local.** Your microphone and camera do not have to send everything to a cloud provider.
+- **Start small.** A voice command does not need a giant language model if a simple rule will do.
+- **See what happened.** Inspect events, test rules, review failures, and trace operations.
+- **Keep control.** A future AI agent should ask before making risky changes. A clever guess is not permission.
 
-### What is implemented versus specified?
+**One important term: API.** An API is a way one program asks another program to do something. OPAL uses **REST**, a common web API style. That means your terminal, web app, Python script, and future AI agent can all ask a service to do the same job.
 
-| Capability | Listen | Talk | Event | Look | Think |
-|---|---:|---:|---:|---:|---:|
-| FastAPI REST implementation | ✅ | ✅ | ✅ | — | — |
-| Typer CLI | ✅ | ✅ | ✅ | Planned | Planned |
-| Browser UI | ✅ static UI | ✅ React | ✅ React | Planned | Planned |
-| Local SQLite state | ✅ | ✅ | ✅ | Planned | Planned |
-| Engine/provider adapters | Vosk + optional refinement | Piper/Kokoro | action types | Proposed YOLO/etc. | Proposed Ollama/hosted |
-| Live media pipeline | Microphone | PCM output | No media processing | Planned image/video | No media capture |
-| ZeroMQ participation | Implemented publisher; opt-in for auto-publication | Integration via REST, not a primary broker | Broker + observer | Planned publisher | Planned orchestration |
-| Production CLI command surface | ✅ | ✅ | ✅ | ❌ | ❌ |
+## Meet the five pieces
 
----
+| Piece | Plain-English job | Example | Status |
+| --- | --- | --- | --- |
+| 👂 **[Listen](https://github.com/PatMartin/opal-listen)** | Hear words and understand commands | “Computer, turn on the kitchen lights” | **Working** |
+| 🗣️ **[Talk](https://github.com/PatMartin/opal-talk)** | Turn written words into speech audio | “The garage door is still open” | **Working** |
+| ⚡ **[Event](https://github.com/PatMartin/opal-event)** | Pass messages around and run approved actions | When a sensor reports heat, notify someone | **Working** |
+| 👁️ **[Look](https://github.com/PatMartin/opal-look)** | Watch images and video and describe what models find | Spot a person in a camera feed | **API designed; implementation to come** |
+| 🧠 **[Think](https://github.com/PatMartin/opal-think)** | Reason, plan, ask for approval, and use tools | Investigate a failing service without blindly changing it | **Planned** |
 
-## The architecture
+Think of Listen as the ears, Talk as the voice, Look as the eyes, Think as the brain, and Event as the nervous system.
 
-### Five services, five responsibilities
+You do **not** need all five. A Pi that hears simple commands and triggers events is already useful.
+
+### What could the whole system do?
 
 ```text
-                       ┌────────────────────────────────────────────┐
-                       │         CLI / SPA / Your applications      │
-                       │         REST control + query plane         │
-                       └───────┬─────────────┬───────────┬─────────┘
-                               │             │           │
-       microphones             │             │           │        cameras/RTSP/files
-            │                  │             │           │               │
-            ▼                  │             │           │               ▼
-      ┌────────────┐           │             │           │         ┌────────────┐
-      │ OPAL LISTEN│           │             │           │         │ OPAL LOOK  │
-      │ wake / STT │           │             │           │         │ detect/OCR │
-      │ NLU / slots│           │             │           │         │ sessions   │
-      └─────┬──────┘           │             │           │         └──────┬─────┘
-            │ events           │             │           │       events   │
-            ▼                  ▼             ▼           ▼                ▼
-      ┌────────────────────────────────────────────────────────────────────────┐
-      │                   OPAL EVENT — the nervous system                      │
-      │     XSUB/XPUB proxy  +  observer  +  rule matching  +  action pool      │
-      │     REST ingress     +  SQLite histories  +  operational visibility    │
-      └───────────┬──────────────────────────┬───────────────────┬────────────┘
-                  │ subscriber/REST          │ tools/actions     │ notifications
-                  ▼                          ▼                   ▼
-          ┌─────────────┐              ┌──────────────┐     ┌─────────────┐
-          │ OPAL THINK  │              │ shell / HTTP │     │ your apps   │
-          │ LLM + agent │              │ / Python     │     │ & devices   │
-          │ tools/memory│              └──────────────┘     └─────────────┘
-          └──────┬──────┘
-                 │ REST speech requests / agent-approved actions
-                 ▼
-          ┌─────────────┐
-          │ OPAL TALK   │  ── WAV / PCM / progressive raw PCM ──▶ speakers/player
-          │ Piper/Kokoro│     (playback belongs to caller/sink)
-          └─────────────┘
+You: "Computer, is someone at the front door?"
+                  |
+             OPAL Listen
+             understands you
+                  |
+             OPAL Think
+             decides what to ask
+                  |
+             OPAL Look
+             checks the camera
+                  |
+             OPAL Event
+             can notify other apps
+                  |
+             OPAL Talk
+             creates a spoken reply
+                  |
+Computer: "I can see a person near the porch."
 ```
 
-**The drawing expresses intended composition.** Event, Listen, and Talk are working services; Look and Think are conceptual service slots. There is currently no built-in end-to-end assistant that implements the whole diagram. A client may coordinate calls directly, or an external Event action/agent can serve as glue.
-
-### Control plane versus data plane
-
-| Surface | Use it for | Do **not** assume |
-|---|---|---|
-| REST (`/api/v1/...`) | CRUD, configuration, synchronous operations, histories, health, media requests, agent/run management | That REST admission means an asynchronous side effect has finished |
-| CLI (`opal <service> ...`) | Scriptable human interface to REST operations; local test and diagnostic commands | That every conceptual command is installed from one suite package |
-| Web SPA | Inspect and manage service state through REST | That UI calls should bypass the contract or directly edit SQLite |
-| ZeroMQ PUB/SUB | Asynchronous event delivery, loose coupling, live observations | Acknowledgment, transactional delivery, replay, global ordering, or exactly-once execution |
-| SSE | A one-way stream of recognition or inference events | Bidirectional transport or universal replay semantics |
-| Raw PCM / WAV / MJPEG | Media exchange and previews | That raw media belongs in JSON bus events |
-
-### Deployment without a monolith
-
-A representative distributed installation:
-
-```text
-Raspberry Pi 5 / edge                            Desktop / GPU / scalable containers
-┌───────────────────────────────┐                 ┌────────────────────────────────────┐
-│ Microphone → opal-listen      │                 │ opal-look (future) + YOLO GPU     │
-│ opal-talk + Piper (optional)  │◀── REST / LAN ─▶│ opal-think (future) + Ollama/LLM  │
-│ Local playback/automation     │                 │ Kokoro/large STT when needed       │
-└──────────────┬────────────────┘                 └─────────────────┬──────────────────┘
-               │                  trusted LAN                       │
-               └──────────────────┬─────────────────────────────────┘
-                                  ▼
-                       opal-event XSUB / XPUB
-                       (one well-known broker)
-```
-
-Run components separately during development. Use containers, service managers or a reverse proxy in production; select interfaces and ports intentionally. **Never expose an unauthenticated development endpoint or unencrypted event socket to an untrusted network.** Event and Talk examples default to loopback. Listen's current quick start explicitly reports binding to all interfaces; secure/restrict that binding for networked deployments instead of assuming every OPAL service is loopback-only.
-
-### Standard ports from the current repositories
-
-| Component | Example default | Notes |
-|---|---|---|
-| Listen HTTP | `:8000` | Current Listen README describes binding to host interfaces; verify before exposing |
-| Talk HTTP | `127.0.0.1:8001` | `/docs`, optional `/ui` |
-| Event HTTP | `127.0.0.1:8080` | API, health, operational control |
-| Event incoming XSUB | `tcp://127.0.0.1:5555` | **Producers connect their PUB** sockets here |
-| Event outgoing XPUB | `tcp://127.0.0.1:5556` | **Consumers connect their SUB** sockets here |
-| Look/Think HTTP | Not implemented | Do not assign a production default that does not exist |
+**This full conversation is a vision, not a working demo today.** Look and Think need implementations, and a playback app must send Talk's generated audio to a speaker. OPAL is honest about the gap between a good design and running code.
 
 ---
 
-## Conceptual vocabulary
+## Five-minute tour of the working pieces
 
-### Fundamental entities
+Already running one of the services? These are real CLI patterns from the service documentation. **Each service has its own command-line installation today**; see [Getting started](#getting-started) before you try the combined-looking examples.
 
-| Entity | Meaning | Owned by |
-|---|---|---|
-| **Engine / provider** | A runtime implementation (Vosk, Piper, Kokoro, YOLO adapter, Ollama adapter) behind a stable interface | Listen/Talk/Look/Think |
-| **Model** | A chosen inference artifact/identifier, along with capabilities and runtime requirements | Listen/Look/Think |
-| **Wakeword** | Speech activation phrase and sensitivity threshold | Listen |
-| **Utterance** | Spoken input after audio capture/endpoint detection | Listen |
-| **Intent** | Deterministic semantic action label, such as `light_turn_on` | Listen |
-| **Slot** | Typed value extracted from an utterance, e.g., `room_name=living_room` | Listen |
-| **Alias** | Alternative spoken form mapping to a canonical slot value | Listen |
-| **Profile** | Reusable group of settings: Listen recognition profile, Talk generation preset, Look analysis preset | Each applicable service |
-| **Voice** | OPAL ID registered against an engine-native voice/model reference | Talk |
-| **Source** | Named camera, file, stream or image/media input | Look (planned) |
-| **Vision task** | Detection, classification, segmentation, pose, tracking, OCR | Look (planned) |
-| **Session** | A service-local stateful task (e.g. video analysis); distinct from a correlation header | Look/Think (planned) |
-| **Event** | Topic plus structured JSON data and optional metadata | Event, all publishers |
-| **Rule** | Enabled topic pattern + AND conditions + one or more action IDs | Event |
-| **Action** | Predefined shell, HTTP or Python handler that can be invoked with an event | Event |
-| **Execution** | Auditable result of dispatching an action | Event |
-| **Conversation** | Persisted multi-turn history | Think (planned) |
-| **Agent** | A configured reasoning policy: model, instructions, allowed tools, memory, delegation | Think (planned) |
-| **Run** | Auditable asynchronous agent workflow with steps and lifecycle | Think (planned) |
-| **Tool** | Restricted agent capability for reading, computation or approved side effects | Think (planned) |
-| **Memory** | Opt-in namespaced durable records separate from prompt context | Think (planned) |
-
-### Tracing and causality
-
-OPAL's correlation vocabulary differentiates four distinct concerns:
-
-| Header | Purpose | Important limitation |
-|---|---|---|
-| `X-Opal-Session-Id` | Logical conversational/workflow context across calls | **Not** a session resource or authorization token |
-| `X-Opal-Transaction-Id` | Logical end-to-end operation from intent through effects | **Not** an ACID transaction across services |
-| `X-Opal-Request-Id` | One HTTP request/response exchange | New request ID on every HTTP hop |
-| `X-Opal-Causation-Id` | Immediate triggering request/event | Parent relationship, not proof of trust |
-
-Valid IDs are opaque printable ASCII tokens, ordinarily up to 128 characters; invalid client-supplied values should fail validation. Propagate transaction/session/cause through derived events, headers and traces. Generate a fresh request ID at each downstream HTTP request. The `metadata.schema_version` of an event envelope is **not** the REST API's `info.version`, nor the Python package version.
-
-```text
-User command
-   transaction=txn-A, session=sess-7
-  └─ Listen recognition: request=req-1
-       └─ intent event: event=evt-10, cause=req-1
-            └─ Event action: request=req-2, cause=evt-10
-                 └─ Talk generation: request=req-3, cause=req-2
-```
-
-### Error handling and concurrency
-
-The shared design prefers predictable HTTP behavior: `201 Created` with `Location`, `202 Accepted` for asynchronous admission, `204 No Content` for deletion, 4xx errors with machine-readable codes, and health indicators independent of command success. A common `OpalError` model is the target; **current contracts and implementation versions should be checked individually** rather than assuming all error shapes have already converged.
-
-For mutable resources, clients should retrieve a strong ETag, apply a conditional update via `If-Match`, and handle `428 Precondition Required` and `412 Precondition Failed` by rereading and retrying *only after reconciling* the new state. Event's CLI can auto-fetch ETags when omitted for supported mutations. This is **optimistic concurrency**, not a global lock.
-
-Growing histories use opaque cursors where supported (`items`, `next_cursor`, `has_more`); bounded configuration catalogs return whole lists. Changing filters invalidates a pagination cursor. Not all existing historical Listen endpoints have been migrated to exactly the same pagination convention; consult the live contract.
-
-### Settings, backups, and change control
-
-Configuration has three lifecycles:
-
-1. **Service/host bootstrap configuration:** bind addresses, file paths, security material and engine resources. Often requires restart.
-2. **Portable runtime settings and catalogs:** recognition phrases, voice registrations, Event rules/actions, approved settings. Changes are validated and applied through REST or service-specific import paths.
-3. **Operational history:** audio logs, Event executions, observations, agent traces. **Not** a configuration backup.
-
-Prefer *validate → inspect diff → backup → apply → verify*. Backups must exclude credentials and history unless there is an explicit separate protected backup process. Be careful: **Listen's import/restore logic supports protective backups and rollback; Talk's current CLI documentation says `backup import` and `backup restore` are immediately applied and do not automatically make a safety backup.** Follow each service's real semantics, not an idealized universal behavior.
-
----
-
-## The unified OPAL command tree
-
-> **THE OPAL VISION — one single master tree.** `[LIVE]` categories come from the current service CLI documents. `[DESIGN]` categories come from the umbrella OPAL design and are **not runnable**. A **real unified dispatcher remains future work** because `opal` console-script names currently collide across distributions. This tree expresses the desired stable user experience without falsifying implementation status.
-
-```text
-opal                                           # SUITE COMMAND NAMESPACE (VISION)
-│
-├── listen [LIVE]                             # Wakeword / recognition / intent engine
-│   │   --api-url URL  --xpub URL  --xsub URL  --json  --timeout SECONDS
-│   ├── wakewords
-│   │   ├── list                              # All configured wakewords
-│   │   ├── get NAME_OR_ID                    # One wakeword + threshold
-│   │   ├── add NAME                          # Threshold / enabled state
-│   │   ├── update NAME_OR_ID                 # Name / threshold / enabled
-│   │   └── remove NAME_OR_ID
-│   ├── intents
-│   │   ├── list
-│   │   ├── get NAME_OR_ID
-│   │   ├── add NAME                           # --phrase, --description, --threshold
-│   │   ├── update NAME_OR_ID
-│   │   ├── remove NAME_OR_ID
-│   │   ├── phrases NAME_OR_ID                 # List phrase templates
-│   │   ├── add-phrase NAME_OR_ID PHRASE
-│   │   └── remove-phrase NAME_OR_ID PHRASE_OR_ID
-│   ├── slots
-│   │   ├── list
-│   │   ├── get NAME_OR_ID
-│   │   ├── add NAME                           # list/number slot types
-│   │   ├── update NAME_OR_ID
-│   │   ├── remove NAME_OR_ID
-│   │   ├── values SLOT                        # Canonical values
-│   │   ├── add-value SLOT VALUE
-│   │   ├── remove-value SLOT VALUE_OR_ID
-│   │   ├── aliases SLOT VALUE
-│   │   ├── add-alias SLOT VALUE ALIAS
-│   │   └── remove-alias SLOT VALUE ALIAS
-│   ├── profiles
-│   │   ├── list
-│   │   ├── get NAME_OR_ID
-│   │   ├── add NAME                           # Wakewords/thresholds/VAD/intents/slots
-│   │   ├── update NAME_OR_ID
-│   │   ├── activate NAME_OR_ID
-│   │   └── remove NAME_OR_ID
-│   ├── settings
-│   │   ├── list
-│   │   └── set KEY VALUE
-│   ├── test
-│   │   ├── text TEXT                         # Deterministic NLU test
-│   │   ├── audio WAV                         # Full file-recognition path
-│   │   ├── listen                            # Live microphone results
-│   │   ├── listen-debug                      # Levels/partials/VAD events
-│   │   └── regression                        # Run stored tests
-│   ├── pipeline
-│   │   ├── start
-│   │   ├── stop
-│   │   └── status
-│   ├── failed
-│   │   ├── list                              # Unmatched utterances
-│   │   ├── get ID
-│   │   ├── add TEXT
-│   │   ├── update ID
-│   │   ├── remove ID
-│   │   └── promote ID                        # Turn failure into a phrase (+ optional test)
-│   ├── regression
-│   │   ├── list
-│   │   ├── get ID
-│   │   ├── add NAME PHRASE
-│   │   ├── update ID
-│   │   └── remove ID
-│   ├── logs
-│   │   ├── list                              # Recognition history
-│   │   ├── get ID
-│   │   └── count
-│   ├── perf
-│   │   ├── last
-│   │   ├── summary
-│   │   └── history
-│   ├── config
-│   │   ├── validate
-│   │   ├── backup
-│   │   ├── backups
-│   │   ├── download FILENAME
-│   │   ├── restore FILENAME
-│   │   ├── delete-backup FILENAME
-│   │   ├── export
-│   │   └── import
-│   ├── system
-│   │   ├── doctor
-│   │   ├── devices
-│   │   ├── live
-│   │   ├── ready
-│   │   ├── info
-│   │   └── ping
-│   └── event
-│       └── publish TOPIC MESSAGE            # Direct ZeroMQ publisher helper
-│
-├── talk [LIVE]                               # Engine-neutral text-to-speech
-│   │   --api-url URL  --json  --timeout SECONDS
-│   ├── engines
-│   │   ├── list                              # Discover built-ins and plugins
-│   │   ├── get ENGINE_ID
-│   │   ├── update ENGINE_ID                  # Enabled / engine-scope options
-│   │   └── validate ENGINE_ID                # Installed dependencies/resources
-│   ├── voices
-│   │   ├── list                              # OPAL voice registrations
-│   │   ├── get VOICE_ID
-│   │   ├── add VOICE_ID                      # --name --engine --ref
-│   │   ├── update VOICE_ID
-│   │   ├── remove VOICE_ID                   # Does NOT remove model files
-│   │   ├── validate VOICE_ID
-│   │   └── test VOICE_ID
-│   ├── profiles
-│   │   ├── list
-│   │   ├── get ID
-│   │   ├── add NAME                          # --voice, --speed, --volume, etc.
-│   │   ├── update ID
-│   │   ├── remove ID
-│   │   └── activate ID
-│   ├── generate TEXT -o OUTPUT               # WAV/PCM; --stream raw progressive PCM
-│   ├── settings
-│   │   ├── list
-│   │   ├── get KEY
-│   │   ├── set KEY VALUE
-│   │   └── delete KEY
-│   ├── backup
-│   │   ├── list
-│   │   ├── create
-│   │   ├── download FILENAME
-│   │   ├── restore FILENAME
-│   │   ├── delete FILENAME
-│   │   ├── export
-│   │   ├── import
-│   │   └── validate
-│   ├── health
-│   ├── info
-│   └── ping
-│
-├── event [LIVE]                              # Event broker, routing rules and effects
-│   │   --api-url URL  --token TOKEN  --json  --timeout SECONDS
-│   │   --opal-session-id ID  --opal-transaction-id ID  --opal-causation-id ID
-│   ├── publish TOPIC                         # --data-json; 202 means admitted, not delivered
-│   ├── list                                  # Event history --topic/--source/--cursor
-│   ├── get EVENT_ID
-│   ├── delete EVENT_ID
-│   ├── clear                                 # Destructive event-history purge
-│   ├── topics                                # Observed/known topics
-│   ├── rules
-│   │   ├── list
-│   │   ├── get RULE_ID
-│   │   ├── create                            # --json or --file
-│   │   ├── update RULE_ID                    # --json/--file/--if-match
-│   │   ├── delete RULE_ID                    # --if-match
-│   │   └── test RULE_ID                      # --event-json, no side effects
-│   ├── actions
-│   │   ├── list
-│   │   ├── get ACTION_ID
-│   │   ├── create                            # Shell / HTTP / Python
-│   │   ├── update ACTION_ID                  # --json/--file/--if-match
-│   │   ├── delete ACTION_ID                  # --if-match
-│   │   └── execute ACTION_ID                 # Explicit manual side effect
-│   ├── executions
-│   │   ├── list                              # Filter/cursor
-│   │   └── get EXECUTION_ID
-│   ├── settings
-│   │   ├── get
-│   │   └── update                            # --json/--file/--if-match
-│   ├── backup
-│   │   ├── export
-│   │   ├── validate
-│   │   └── import                            # Conditional atomic import
-│   ├── health [--live | --ready]
-│   └── stats
-│
-├── look [DESIGN — NOT IMPLEMENTED]           # Computer vision and video sessions
-│   ├── engines
-│   │   ├── list
-│   │   ├── get ENGINE_ID
-│   │   ├── update ENGINE_ID
-│   │   └── validate ENGINE_ID
-│   ├── models
-│   │   ├── list
-│   │   ├── get MODEL_ID
-│   │   ├── add MODEL_ID
-│   │   ├── update MODEL_ID
-│   │   ├── remove MODEL_ID
-│   │   └── validate MODEL_ID
-│   ├── sources
-│   │   ├── list
-│   │   ├── get SOURCE_ID
-│   │   ├── add SOURCE_ID
-│   │   ├── update SOURCE_ID
-│   │   ├── remove SOURCE_ID
-│   │   └── validate SOURCE_ID
-│   ├── profiles
-│   │   ├── list
-│   │   ├── get PROFILE_ID
-│   │   ├── add PROFILE_ID
-│   │   ├── update PROFILE_ID
-│   │   ├── remove PROFILE_ID
-│   │   ├── validate PROFILE_ID
-│   │   └── activate PROFILE_ID
-│   ├── media
-│   │   ├── upload PATH
-│   │   ├── list
-│   │   ├── get MEDIA_ID
-│   │   ├── download MEDIA_ID
-│   │   └── remove MEDIA_ID
-│   ├── analyze IMAGE_PATH                    # One-shot inference: model/task/confidence
-│   ├── sessions
-│   │   ├── start                             # Source + profile/model
-│   │   ├── list
-│   │   ├── get SESSION_ID
-│   │   ├── stop SESSION_ID
-│   │   ├── remove SESSION_ID
-│   │   ├── latest SESSION_ID                # Latest structured result
-│   │   ├── events SESSION_ID                # SSE stream / result events
-│   │   └── preview SESSION_ID               # Annotated MJPEG preview
-│   ├── results
-│   │   ├── search
-│   │   ├── get RESULT_ID
-│   │   ├── remove RESULT_ID
-│   │   └── snapshot RESULT_ID               # Request exact-frame JPEG
-│   └── snapshots
-│       ├── list
-│       ├── get SNAPSHOT_ID
-│       ├── download SNAPSHOT_ID
-│       └── remove SNAPSHOT_ID
-│
-└── think [DESIGN — NOT IMPLEMENTED]          # Reasoning, agents, memory and tools
-    ├── providers
-    │   ├── list
-    │   ├── get PROVIDER_ID
-    │   ├── add PROVIDER_ID
-    │   ├── update PROVIDER_ID
-    │   └── remove PROVIDER_ID
-    ├── models
-    │   ├── list
-    │   ├── get MODEL_ID
-    │   ├── add MODEL_ID
-    │   ├── update MODEL_ID
-    │   └── remove MODEL_ID
-    ├── generations
-    │   └── create PROMPT                     # Stateless inference; optional stream
-    ├── conversations
-    │   ├── list
-    │   ├── create
-    │   ├── get CONVERSATION_ID
-    │   ├── remove CONVERSATION_ID
-    │   ├── messages CONVERSATION_ID
-    │   └── respond CONVERSATION_ID TEXT     # Stateful turn
-    ├── agents
-    │   ├── list
-    │   ├── get AGENT_ID
-    │   ├── add AGENT_ID
-    │   ├── update AGENT_ID
-    │   └── remove AGENT_ID
-    ├── runs
-    │   ├── list
-    │   ├── create AGENT_ID                   # Auditable agent execution
-    │   ├── get RUN_ID
-    │   ├── cancel RUN_ID
-    │   └── events RUN_ID                     # SSE run trace
-    ├── tools
-    │   ├── list
-    │   ├── get TOOL_ID
-    │   ├── add TOOL_ID
-    │   ├── update TOOL_ID
-    │   └── remove TOOL_ID
-    └── memory
-        ├── list
-        ├── get MEMORY_ID
-        ├── set KEY VALUE
-        ├── search QUERY
-        └── remove MEMORY_ID
-```
-
-### Unified-dispatcher design target `[FUTURE]`
-
-The user experience should ultimately be a single `opal` package hosting a Typer root app that registers independent service-specific subapps through entry points, while retaining existing standalone executables for compatibility. The dispatcher should be **a thin HTTP client**, not a dependency magnet importing PyTorch, Vosk or TTS runtimes. Service CLIs should be installable as lightweight optional client extras. Commands should have discoverable `--help`, `--json`, explicit `--api-url`/service endpoints, stable exit codes, completion, and minimal ambiguity over local versus server-side operations. Keep the hyphenated CLI option convention and `snake_case` in configuration and Python code.
-
----
-## Getting started
-
-### Prerequisites
-
-The working services are Python 3.11+ projects. Listen needs a supported audio stack, an installed Vosk model for real recognition, and optionally `faster-whisper`; Talk needs installed voice/model assets for its Piper/Kokoro adapters; Event needs PyZMQ and a writable data/config directory. Node.js is needed to develop/build the Event and Talk React SPAs. The central API contract toolchain requires Node.js 20+ (CI uses Node 22).
-
-On a recent Debian/Ubuntu host, the following system dependencies are a reasonable development starting point. Install only what your chosen services actually need:
+### 1. Make your computer say something — WORKS TODAY
 
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-dev build-essential \
-  libasound2-dev portaudio19-dev libzmq3-dev ffmpeg sox git
+# See which voices are registered.
+opal-talk voices list
+
+# Generate spoken audio with your active voice.
+opal-talk generate "Greetings, human. The machines are being polite today." -o greeting.wav
+
+# Play it on a Linux computer with an audio player.
+ffplay -autoexit -nodisp greeting.wav
 ```
 
-Keep repositories as siblings:
+Talk makes the audio file. **Your player** makes the sound. This separation is useful: the service can run on a server while a different device handles the speaker.
+
+Want a particular voice?
 
 ```bash
-mkdir -p ~/src/opal-suite
-cd ~/src/opal-suite
-for repo in opal opal-api opal-event opal-listen opal-talk opal-look opal-think; do
-  git clone "https://github.com/PatMartin/${repo}.git"
-done
+opal-talk engines list
+opal-talk voices list --engine kokoro
+opal-talk voices test kokoro-af-heart -o audition.wav
 ```
 
-**Note:** `opal-look` and `opal-think` are currently empty repositories. If they have no initial commit, Git may warn that you cloned an empty repository. This is expected, not an installation failure.
+The voice ID must be registered, the model files must be installed, and the engine must be available. Voice IDs above are examples, not a promise that they are preinstalled.
 
-### A working service-by-service installation `[LIVE]`
-
-**Keep each service in its own virtual environment** to avoid the `opal` entry-point collision and to avoid deploying heavy audio/model dependencies everywhere.
-
-**OPAL Event — terminal A**
+### 2. Teach your assistant a phrase — WORKS TODAY
 
 ```bash
-cd ~/src/opal-suite/opal-event
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-cp config/opal_event.example.yaml config/opal_event.yaml
-mkdir -p var
-.venv/bin/opal-event-svc --config config/opal_event.yaml --log-level info
-```
-
-**OPAL Listen — terminal B**
-
-```bash
-cd ~/src/opal-suite/opal-listen
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-export OPAL_LISTENER_VOSK_MODEL_PATH=/absolute/path/to/vosk-model-small-en-us-0.15
-.venv/bin/python -m opal_listener
-```
-
-The model path is an example: download the Vosk model separately and point the environment variable to its extracted directory. Text-only tests can use the fake provider in automated testing, but production speech recognition requires a functioning provider/model. See the [Listen quick start](https://github.com/PatMartin/opal-listen/blob/main/docs/QUICKSTART.md) for Docker Compose, ALSA, model installation, and startup options.
-
-**OPAL Talk — terminal C**
-
-```bash
-cd ~/src/opal-suite/opal-talk
-python3 -m venv .venv
-.venv/bin/pip install -e '.[engines,dev]'
-# Install actual Piper/Kokoro model files separately; configure paths in config/service.yaml
-.venv/bin/opal-talk-svc
-```
-
-In new terminal windows, invoke the *correct environment's CLI*:
-
-```bash
-# Event
-~/src/opal-suite/opal-event/.venv/bin/opal-event health
-
-# Listen; the Listen environment's `opal` entry point exposes `listen`
-~/src/opal-suite/opal-listen/.venv/bin/opal listen system doctor
-
-# Talk
-~/src/opal-suite/opal-talk/.venv/bin/opal-talk health
-```
-
-Many subsequent examples show the aspirational common spelling, `opal event ...` / `opal talk ...` / `opal listen ...`, matching the service docs. Today, you can use `opal-event` and `opal-talk` as standalone alternatives, and call Listen's environment-owned `opal` binary. To prevent accidental calls to the wrong distribution, **check `command -v opal` and the output of `opal --help`**.
-
-### Environment variables and API endpoints
-
-```bash
-# Target each running REST API; change hosts/ports as your actual topology requires.
-export OPAL_EVENT_API_URL='http://127.0.0.1:8080'
-export OPAL_TALK_API_URL='http://127.0.0.1:8001'
-# Listen's REST endpoint can be overridden per command with --api-url.
-
-# Event authentication is needed when the service is configured to require it.
-# Export secrets in an appropriately protected process environment, not in git.
-export OPAL_EVENT_API_TOKEN='replace-with-protected-secret'
-
-# ZeroMQ event transport: publishers connect to 5555, subscribers connect to 5556.
-export OPAL_EVENT_XPUB_URL='tcp://127.0.0.1:5555'  # Listen CLI legacy option name
-export OPAL_EVENT_XSUB_URL='tcp://127.0.0.1:5556'  # Listen CLI legacy option name
-```
-
-**Naming trap:** Listen exposes `--xpub` for the URL its PUB socket connects to, but the underlying Event broker's **producer-facing socket is XSUB** (`:5555`). The names in Listen's CLI do not change the ZeroMQ topology. A consumer's SUB socket connects to the broker's **XPUB** (`:5556`).
-
-### Verify that each process is healthy
-
-```bash
-# Standalone console scripts for Event/Talk:
-opal-event health
-opal-event health --ready
-opal-talk health
-opal-talk info
-
-# In Listen's selected environment:
-opal listen system ping
-opal listen system info
+# Run these using Listen's own virtual environment.
 opal listen system doctor
-opal listen system devices
-opal listen system live
-opal listen system ready
+opal listen wakewords list
+opal listen intents list
 
-# REST probes where enabled by the service implementation:
-curl -i http://127.0.0.1:8080/api/v1/health/
-curl -i http://127.0.0.1:8001/api/v1/health/
+# Try a phrase without turning on any real device.
+opal listen test text "computer, turn on the kitchen light"
 ```
 
-For Event and Talk, API reference is ordinarily visible at each service's `/docs` path. Listen's service also exposes `/docs`. Browser UI behavior differs: Talk serves a built SPA at `/ui`, Event's React SPA can run through Vite or be served separately, and Listen currently includes a static HTML UI rather than a separately packaged React app.
-
-### Building the UI where it exists
-
-```bash
-# Event SPA: in a separate shell, after starting the Event REST service
-cd ~/src/opal-suite/opal-event/spa
-npm install
-OPAL_EVENT_API_URL=http://127.0.0.1:8080 npm run dev
-
-# Talk SPA: build and serve from the Talk service's configured spa_dir
-cd ~/src/opal-suite/opal-talk/spa
-npm install
-npm run build
-```
-
-### Contract validation from the central repo
-
-```bash
-cd ~/src/opal-suite/opal-api
-npm ci
-npm run validate     # OpenAPI structure and reference resolution (Redocly)
-npm run lint         # General Spectral rules
-npm run lint:opal    # OPAL conventions: errors, headers, request context
-npm run check        # All checks, same intent as CI
-```
-
-These checks validate **published YAML files**; they do not prove that a deployed runtime has upgraded to those contract versions. Runtime operation/response parity needs service-specific tests too.
-
----
-
-## OPAL Listen — the ears
-
-**Status: `[LIVE]`**, source: [`opal-listen`](https://github.com/PatMartin/opal-listen). **Concept:** convert low-level audio into structured, testable meaning, usually without an LLM. A microphone capture pipeline feeds VAD, optional wakeword detection, a speech provider, transcript normalization and intent/slot matching. A matched **live microphone** recognition may be published to Event when external publication is enabled. Diagnostics and tests should not accidentally cause physical actions.
-
-### Pipeline and data model
-
-```text
-Microphone / WAV
-    │  capture, resample/normalize, bounded buffering
-    ▼
-VAD + endpointing  ──────────────► discard silence/noise
-    │
-    ▼
-Wakeword candidate ── confirmation ─► command active
-    │
-    ▼
-Vosk grammar-constrained STT (or configured provider)
-    │                     └── optional async Whisper refinement
-    ▼
-Utterance normalization
-    ▼
-Intent phrase/template match
-    ├── literal words
-    ├── [optional words]
-    ├── (alternative | words)
-    ├── {slot_name}: canonical value/alias/number
-    └── confidence thresholds
-    ▼
-Recognition result ─────► SQLite logs / failed utterances / regression evidence
-    │
-    ├── SSE live diagnostics (local)
-    └── optional, deduplicated live intent event ► OPAL Event
-```
-
-Typical model result:
+A recognition result can contain something like:
 
 ```json
 {
   "wakeword": "computer",
   "intent_name": "light_turn_on",
-  "slot_values": { "room_name": "kitchen" }
+  "slot_values": {"room_name": "kitchen"}
 }
 ```
 
-The response above is **illustrative**, not a complete serialization of the real result schema. Consult the local OpenAPI spec for every field, match state, confidence score and error.
+An **intent** is what you want to do. A **slot** is a detail, such as which room. This makes a small local speech recognizer surprisingly capable.
 
-### Wakeword management `[LIVE]`
+**Good to know:** A text test checks understanding; it does **not** turn on a real light or publish a live command.
 
-A wakeword is the explicit start of an actionable command in Mode 1. Keep multiple wakewords available, use meaningful thresholds, and test “almost wakewords” as negative cases.
+### 3. Send a message through the system — WORKS TODAY
 
 ```bash
+opal-event health
+
+opal-event publish sensor.temperature.reading \
+  --data-json '{"room":"workshop","celsius":31.5}'
+
+opal-event list --topic sensor.temperature.reading --limit 10
+```
+
+A **topic** is the label on a message. Here, `sensor.temperature.reading` tells listeners what kind of message it is.
+
+The publish command reports when Event accepts the message. It does **not** prove every subscriber saw it. OPAL's event bus is **best effort**, not a guaranteed-delivery system.
+
+---
+
+## Getting started
+
+You can use these projects separately, or run them on different computers on your network.
+
+### What you need
+
+A modern Linux machine, Python 3.11 or newer, Git, and the hardware or model files for the service you want to use. On Ubuntu, this is a reasonable starting point:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-dev \
+  build-essential libasound2-dev portaudio19-dev \
+  libzmq3-dev ffmpeg sox
+```
+
+**Put the projects side by side:**
+
+```bash
+mkdir -p ~/opal-suite
+cd ~/opal-suite
+
+git clone https://github.com/PatMartin/opal-event.git
+git clone https://github.com/PatMartin/opal-listen.git
+git clone https://github.com/PatMartin/opal-talk.git
+git clone https://github.com/PatMartin/opal-api.git
+```
+
+You can also clone [this umbrella repository](https://github.com/PatMartin/opal) for the guide itself. It does not currently install an all-in-one application.
+
+### Start Event: the message switchboard
+
+In terminal 1:
+
+```bash
+cd ~/opal-suite/opal-event
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+
+cp config/opal_event.example.yaml config/opal_event.yaml
+mkdir -p var
+
+.venv/bin/opal-event-svc --config config/opal_event.yaml --log-level info
+```
+
+In terminal 2:
+
+```bash
+~/opal-suite/opal-event/.venv/bin/opal-event health
+~/opal-suite/opal-event/.venv/bin/opal-event topics
+```
+
+### Start Listen: the ears
+
+In a separate terminal:
+
+```bash
+cd ~/opal-suite/opal-listen
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+
+# Download a compatible Vosk model separately.
+# Replace this path with the real extracted model directory.
+export OPAL_LISTENER_VOSK_MODEL_PATH=/absolute/path/to/vosk-model-small-en-us-0.15
+
+.venv/bin/python -m opal_listener
+```
+
+Check it from another terminal:
+
+```bash
+~/opal-suite/opal-listen/.venv/bin/opal listen system doctor
+~/opal-suite/opal-listen/.venv/bin/opal listen test text \
+  "computer, turn on the kitchen light"
+```
+
+For microphones, models, Docker, and sound-device setup, use the [Listen quick start](https://github.com/PatMartin/opal-listen/blob/main/docs/QUICKSTART.md).
+
+### Start Talk: the voice
+
+In a separate terminal:
+
+```bash
+cd ~/opal-suite/opal-talk
+python3 -m venv .venv
+.venv/bin/pip install -e '.[engines,dev]'
+
+# Install Piper and/or Kokoro voice model files separately.
+# Then configure the correct paths in config/service.yaml.
+.venv/bin/opal-talk-svc
+```
+
+Check it from another terminal:
+
+```bash
+~/opal-suite/opal-talk/.venv/bin/opal-talk health
+~/opal-suite/opal-talk/.venv/bin/opal-talk engines list
+~/opal-suite/opal-talk/.venv/bin/opal-talk voices list
+```
+
+See the [Talk guide](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) for engine files, voice setup, and streaming.
+
+### One little packaging trap
+
+Each working service publishes its own `opal` console command. If you install them in **one Python environment**, one entry point can replace another. There is **not yet a single suite-wide `opal` dispatcher**.
+
+For now:
+
+- Use separate virtual environments, as shown above.
+- Use `opal-event` for Event and `opal-talk` for Talk.
+- Use Listen's environment-specific `opal listen ...`.
+- When this guide shows `opal event ...` or `opal talk ...`, those are the native forms documented by their respective service CLIs, **not** proof that one globally installed command supports all services.
+
+In other words: the command *language* is shared; the installation experience is still catching up.
+
+---
+
+## Build something fun
+
+The best way to learn OPAL is to give it a mission.
+
+### Adventure 1: Give your Raspberry Pi a secret phrase — WORKS TODAY
+
+Give Listen a new wakeword and practice recognizing commands.
+
+```bash
+opal listen wakewords add "hey opal" --threshold 0.85
 opal listen wakewords list
-opal listen wakewords get computer
-opal listen wakewords add 'hey opal' --threshold 0.85
-opal listen wakewords add nabu --threshold 0.70 --disabled
-opal listen wakewords update nabu --threshold 0.95 --enabled
-opal listen wakewords update 'hey opal' --name 'okay opal'
-# Destructive; remove only when not referenced by a required profile:
-opal listen wakewords remove nabu
+
+opal listen test text "computer, turn on the kitchen light"
+
+# Live microphone testing (Ctrl-C to stop).
+opal listen test listen-debug
 ```
 
-The architecture uses a candidate/confirmation approach to reduce false positives such as a sound-alike word. In the current Listen 1.3.0 contract, a *pending* wakeword candidate must not produce a command outcome before confirmation.
-
-### Intents and phrase templates `[LIVE]`
-
-Intents are named actions, not arbitrary language-model interpretations. Phrase syntax:
-
-```yaml
-# Illustrative excerpt of actual seeded grammar
-intents:
-  - name: light_turn_on
-    enabled: true
-    confidence_threshold: 0.75
-    phrases:
-      - turn on [the] {room_name} (light | lights)
-      - switch on [the] {room_name} (light | lights)
-```
-
-Square brackets express optional words, parentheses express alternatives, and braces refer to configured slots. A phrase generator can expand a compact template into many recognizer hypotheses while preserving canonical slot values.
+You can build your own vocabulary too:
 
 ```bash
-opal listen intents list
-opal listen intents get light_turn_on
-opal listen intents add play_music \
-  --description 'Start music playback' --threshold 0.75 \
-  --phrase 'play [some] music' \
-  --phrase '(start | put on) [some] music'
-opal listen intents add light_dim \
-  --description 'Dim a room' \
-  --phrase 'dim [the] {room_name} (light | lights)'
-opal listen intents add-phrase light_turn_on 'illuminate [the] {room_name}'
-opal listen intents phrases light_turn_on
-opal listen intents update play_music --name music_play
-opal listen intents update cancel --threshold 0.9 --disabled
-opal listen intents remove-phrase light_turn_on 'illuminate [the] {room_name}'
-```
-
-A phrase should be short and representative of a command you actually want to recognize. Requiring every wording variation to be enumerated manually is precisely what the template/slot/alias mechanism avoids. Distinguish between `no_wakeword`, `no_intent_matched`, low confidence, unfilled slots and actual provider failure when diagnosing misses.
-
-### Slots and aliases `[LIVE]`
-
-A slot is a typed captured variable. A list slot can hold values and aliases (`lounge` → `living_room`); a number slot can recognize an integer (`twenty one` → `21`). Aliases must be associated with canonical values and should avoid accidental ambiguity between commands.
-
-```bash
-opal listen slots list
-opal listen slots get room_name
-opal listen slots add color --type list
-opal listen slots add-value color green --alias lime --alias emerald
-opal listen slots values color
-opal listen slots aliases room_name living_room
-opal listen slots add-alias room_name living_room 'family room'
-opal listen slots remove-alias room_name living_room 'family room'
-opal listen slots remove-value color green
-```
-
-Check the live CLI's `slots add --help` for precise type flag/accepted values; this example is the conceptual sequence and the slot creation syntax may depend on the version installed. The **add-value/alias operations** above are documented in the current CLI.
-
-### Recognition profiles and VAD `[LIVE]`
-
-A profile bundles recognition tuning and an enabled vocabulary. Build a quiet-room profile with less aggressive VAD, or a noisy-room profile with more conservative thresholds. Profiles are a way to package validated operating modes, not to duplicate a pipeline per user.
-
-```bash
-opal listen profiles list
-opal listen profiles get default
-opal listen profiles add late_night \
-  --description 'Quiet evenings' --activate \
-  --wakeword computer \
-  --threshold wakeword=0.85 \
-  --vad silence_end_ms=900 --vad energy_threshold_dbfs=-50 \
-  --intent light_turn_on --intent light_turn_off \
-  --intent get_time --intent cancel \
-  --slot room_name
-opal listen profiles update late_night --vad silence_end_ms=1000
-opal listen profiles activate default
-opal listen profiles remove late_night
-```
-
-Important tuning knobs include `energy_threshold_dbfs`, `noise_margin_db`, end-of-speech silence, max utterance duration, wakeword threshold, STT threshold, intent threshold and model choice. Change one dimension at a time, record noise conditions and rerun positive/negative test sets.
-
-### Test text, recorded audio, and microphone `[LIVE]`
-
-```bash
-# Fastest, deterministic NLU sanity checks:
-opal listen test text 'computer, turn on the kitchen lights'
-opal listen test text 'computer, switch on the lounge lights'
-opal listen test text 'set the temperature to twenty one degrees'
-opal listen test text 'start a ten minute timer' --expect-intent timer_set
-opal listen test text 'order a pizza' --expect-intent no_match --no-save
-
-# Exercise real STT (not just text matching):
-opal listen test audio resources/cmds/cmd-kitchen-lights-on.wav --require-wakeword
-opal listen test audio resources/cmds/cmd-cancel.wav --expect-intent cancel
-
-# Capture your own 16-kHz mono test audio:
-arecord -f S16_LE -r 16000 -c 1 -d 4 /tmp/opal-command.wav
-opal listen test audio /tmp/opal-command.wav -v
-
-# Live debugging (watch VAD, levels and partial recognition):
-opal listen test listen --duration 30
-opal listen test listen-debug --count 10 --duration 10 --start
-```
-
-**Critical safety distinction:** Listen 1.3.0 specifies that diagnostic `test text` and `test audio` results are locally evaluated/logged but **must not be published externally as actionable intent events**. Only qualified live microphone matches are eligible for publication, subject to enablement and deduplication. To simulate action routing, deliberately publish a separate test event with the Event CLI.
-
-### Pipeline lifecycle and telemetry `[LIVE]`
-
-```bash
-opal listen pipeline status
-opal listen pipeline start
-opal listen test listen --no-start
-opal listen perf last
-opal listen perf summary
-opal listen perf history
-opal listen logs list
-opal listen logs count
-opal listen pipeline stop
-opal listen system devices
-opal listen system doctor
-```
-
-Measure microphone overruns, VAD decisions, recognition delays, STT latencies, refinement queue depth, match rate and successful publication. The 1.3.0 Listen contract adds metrics for dropped audio blocks, overflows, queued refinement, recovery counts and stage latencies. Model/pipeline failure should not crash diagnostic REST endpoints.
-
-### The failed-utterance improvement loop `[LIVE]`
-
-The learning loop is human-supervised and testable:
-
-```text
-Heard something → no recognized intent → failed utterance record
-      ↓ inspect transcript and context
-Create alias or phrase → promote failure → add regression case
-      ↓
-Rerun positive, negative and noise suites → compare performance
-      ↓
-Retain validated change or revert
-```
-
-```bash
-opal listen failed list --unreviewed
-opal listen failed list --not-promoted --limit 20
-opal listen failed get 3
-opal listen failed promote 3 --intent light_turn_on
-opal listen failed update 5 --reviewed --notes 'TV in background'
-
-opal listen regression add lounge_on 'switch on the lounge lights' \
-  --expect-intent light_turn_on --slot room_name=living_room
-opal listen regression add not_a_command 'order a pizza' \
-  --expect-intent no_match
-opal listen regression list
-opal listen test regression
-```
-
-Promoting a failure to a phrase without a negative test can make recognition *worse* by introducing false positives. Maintain golden utterances, negatives and noisy-room fixtures. For voice assistants controlling physical systems, a false positive can be more costly than a prompt to repeat the command.
-
-### Publication is intentionally opt-in `[LIVE]`
-
-The seeded `opal_listener/config/settings.yaml` currently sets `event_publication_enabled: false`. Set it true only when you have a trusted downstream consumer and have validated the grammar:
-
-```bash
-opal listen settings list
-opal listen settings set event_publication_enabled true
-opal listen settings set dedup_window_ms 2000
-opal listen pipeline status
-
-# Controlled manual bus smoke test, independent of automatic recognition:
-opal listen event publish opal.demo.test '{"message":"hello from Listen CLI"}'
-```
-
-The direct `event publish` helper wraps plain strings or JSON into a two-frame OPAL envelope. Listen's 1.3.0 contract disallows `event_transport=both` to avoid duplicate effects across parallel transports when there is no cross-transport deduplication. Publishing an event is **not** a delivery guarantee.
-
-### Listen configuration, backup and recovery `[LIVE]`
-
-```bash
-opal listen config validate
-opal listen config export
-opal listen config backup
-opal listen config backups
-opal listen config download BACKUP_FILENAME
-# Review the current state and take a fresh backup before destructive restore:
-opal listen config restore BACKUP_FILENAME
-opal listen config import
-```
-
-The main seed files under `opal_listener/config/` are `wakewords.yaml`, `intents.yaml`, `slots.yaml`, `profiles.yaml`, `stt.yaml` and `settings.yaml`. SQLite stores active state and recognition history; Alembic manages schema changes. The installed reference docs explain local config-file validation, YAML export modes, backup names and restore confirmations.
-
-### Listen internals and extension points
-
-The current source provides audio capture/resampling/VAD, Vosk provider support, a fake provider for tests, optional Whisper refinement, grammar/rule matching, a provider registry, settings persistence, failed-utterance review, regression records, ZeroMQ transport, HTTP events, a FastAPI API and embedded UI. `ListenerProvider` is a useful extension boundary: different recognizers should return a common result type and expose capability/configuration validation instead of leaking model-specific details into clients.
-
----
-
-## OPAL Talk — the voice
-
-**Status: `[LIVE]`**, source: [`opal-talk`](https://github.com/PatMartin/opal-talk). Talk is a **synthesis API**, not a media player. A caller chooses a registered voice or a profile, submits text, and receives WAV or raw PCM. Engine adapters select Piper/Kokoro; the core applies chunking, supported sample-rate conversion, volume and encoding.
-
-### Core model
-
-```text
-Text request + optional profile/voice/portable controls
-   │
-   ├── Resolve active or explicit profile
-   ├── Resolve registered OPAL voice → native engine voice reference
-   ├── Merge effective engine options + validate capabilities
-   ▼
-TtsEngine adapter (Piper / Kokoro / plugin)
-   │ synthesize chunks
-   ▼
-Core: chunking, resampling, gain, PCM/WAV encoding
-   ├── POST /api/v1/generate          → completed WAV or raw PCM
-   └── POST /api/v1/generate/stream   → progressive raw PCM
-                                           │
-                                           ▼
-                                     caller-owned player/sink
-```
-
-**Engine** = synthesis runtime installed on the host. **Voice** = stable OPAL registration pointing at an engine-native resource. **Profile** = reusable speed/volume/format/voice preset. **Generation request** = a one-off operation optionally overriding selected defaults.
-
-### Install voices and engines `[LIVE]`
-
-Talk does not download Piper/Kokoro model assets, and registering a voice **does not upload, modify or remove** model files. For Piper, keep the `.onnx` file and corresponding `.onnx.json` together. For Kokoro, install the model and voice-bin assets and configure `model_path` / `voices_path`.
-
-```bash
-opal talk engines list
-opal talk engines get piper
-opal talk engines get kokoro
-opal talk engines validate piper
-opal talk engines validate kokoro
-
-# Point the Piper adapter to the local directory containing ONNX voice files:
-opal talk engines update piper -O voices_dir='"/home/me/piper/voices"'
-
-# Register model references that exist on the service host:
-opal talk voices add lessac \
-  --name 'Lessac (medium)' --engine piper --ref en_US-lessac-medium
-opal talk voices add kokoro-michael \
-  --name 'Kokoro Michael' --engine kokoro --ref am_michael
-
-opal talk voices list
-opal talk voices list --engine kokoro
-opal talk voices get lessac
-opal talk voices validate lessac
-opal talk voices test lessac
-```
-
-A voice registration's `engine_voice_ref` is engine-specific. Piper can resolve a model basename relative to the engine's `voices_dir`; Kokoro uses its voice name. A voice's `voice_id` remains stable even if its display name changes.
-
-### Engine options versus portable controls
-
-| Scope | Examples | Behavior |
-|---|---|---|
-| Engine configuration | Piper `voices_dir`, cache size; Kokoro model and voices asset paths | Applies to that adapter/host runtime |
-| Voice registration | Engine/native reference, defaults, supported metadata | Logical catalog record, not uploaded model |
-| Profile | Voice, speed, volume, sample rate, output format, engine options | Reusable preset, exactly one active |
-| Generation request | Text, profile/voice override, speed, volume, output type, sample rate | Applies to this one output only |
-
-The engine-specific `-O key=value` option parses values as JSON-like scalars; for example `-O noise_scale=0.4` is numeric while a string path may need nested quoting. **Unsupported options must fail rather than being silently ignored.** Engine option updates *merge*, but voice/profile engine-option updates *replace* the whole map; inspect the current object first.
-
-```bash
-# Merge one engine-wide option while retaining others:
-opal talk engines update piper -O cache_size=8
-
-# Replace the entire voice-specific option map:
-opal talk voices update lessac -O noise_scale=0.4 -O noise_w_scale=0.6
-
-# Clear all voice-level engine options:
-opal talk voices update lessac --options-json '{}'
-```
-
-### Talk profiles `[LIVE]`
-
-```bash
-opal talk profiles list
-opal talk profiles add main --voice lessac --active
-opal talk profiles add calm --voice lessac --speed 0.9 --volume 0.8
-opal talk profiles get 1
-opal talk profiles activate 1
-
-# Override the selected profile for an individual generation:
-opal talk generate 'Welcome back.' --profile 1 -o welcome.wav
-```
-
-Use a profile for *stable product intent* (“house voice,” “telephony prompt,” “brief announcement”) instead of editing global settings whenever you want a different output. Profile identifiers may be numeric; refer to the actual IDs returned by your service.
-
-### Complete WAV and raw PCM generation `[LIVE]`
-
-```bash
-# Completed WAV using the current active profile:
-opal talk generate 'Hello from OPAL.' -o hello.wav
-
-# Choose an explicit voice and common options:
-opal talk generate 'Welcome to the workshop.' \
-  --voice lessac --speed 1.10 --volume 0.80 \
-  --sample-rate 16000 -o workshop.wav
-
-# Completed raw PCM instead of a WAV container:
-opal talk generate 'Testing raw PCM output.' \
-  --format pcm --sample-rate 16000 -o /tmp/message.pcm
-
-# Input from stdin is useful in scripts:
-echo 'The build passed.' | opal talk generate - -o build-passed.wav
-opal talk generate - -o chapter.wav < chapter.txt
-
-# Listen to a completed file using your chosen audio player:
-aplay hello.wav
-```
-
-Talk's raw PCM is **signed 16-bit little-endian, mono** (`s16le`). Its sample rate is reflected by the API's `X-Opal-Sample-Rate` header. If you play raw PCM at the wrong sample rate, the speed and pitch will be wrong. A completed WAV includes a container header; a progressive PCM stream does not.
-
-### Progressive streaming `[LIVE]`
-
-```bash
-# Start listening before all sentences have been synthesized:
-opal talk generate \
-  'The first sentence can play while the rest of this announcement is generated.' \
-  --stream --sample-rate 22050 -o - \
-  | aplay -r 22050 -f S16_LE -c 1 -t raw
-
-# Pipe to PipeWire/PulseAudio:
-opal talk generate 'Pipeline check.' --stream --sample-rate 24000 -o - \
-  | pacat --raw --rate=24000 --format=s16le --channels=1
-
-# Or decode raw PCM through FFmpeg/ffplay:
-opal talk generate 'Streaming output.' --stream --sample-rate 24000 -o - \
-  | ffplay -autoexit -nodisp -f s16le -ar 24000 -ac 1 -i -
-
-# Save raw streamed PCM, then wrap it in WAV:
-opal talk generate 'Saved progressive stream.' \
-  --stream --sample-rate 16000 -o /tmp/message.pcm
-ffmpeg -f s16le -ar 16000 -ac 1 -i /tmp/message.pcm /tmp/message.wav
-```
-
-**Streaming is synchronous to the caller**, even though bytes arrive progressively. Streaming does not create a persistent job. The CLI's `--stream` path is raw PCM, not a partial WAV. Reduce `chunk_max_chars` to improve first-byte latency, while measuring continuity and total time; tiny chunks are not always better.
-
-### Built-in engines and extension pattern
-
-Piper is attractive for low-resource edge nodes; Kokoro is useful for higher-fidelity voices when the host has suitable compute. Both adapters ship in the current source. Third-party TTS adapters implement the documented `TtsEngine` interface (`availability`, `describe_voice`, `synthesize`, `option_specs`) and can be registered with `opal_talk.engines` Python entry points. Keep engine-specific options opaque and report supported capabilities; *the public API should not change just because an adapter changes*.
-
-### Talk settings, backups and health `[LIVE]`
-
-```bash
-opal talk settings list
-opal talk settings get chunk_max_chars
-opal talk settings set max_text_chars 100000
-opal talk settings set chunk_max_chars 200
-opal talk settings set default_speed 1.1
-opal talk settings set default_output_format wav
-
-opal talk backup validate
-opal talk backup create
-opal talk backup list
-opal talk backup export
-opal talk health
-opal talk info
-opal talk ping
-```
-
-**Backup caution:** current Talk documentation says `backup restore` and `backup import` operate without automatic safety backups. Make a backup yourself immediately beforehand; preserve exported YAML in version control while keeping model binaries and secrets out of git. Also remember that deleting a voice registration does not delete the underlying `.onnx` assets.
-
-### Example REST call `[LIVE]`
-
-```bash
-# Generate a completed audio response directly over HTTP.
-# Use a voice/profile known to exist in your instance.
-curl -fsS -X POST 'http://127.0.0.1:8001/api/v1/generate' \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"Hello from REST.","voice_id":"lessac","output_format":"wav"}' \
-  -o /tmp/rest-hello.wav
-```
-
-The precise request schema and required/optional fields are defined in the service's active `opal_talk.yaml`; test your request against `/docs` and its current contract before embedding it in production code.
-
----
-
-## OPAL Event — the nervous system
-
-**Status: `[LIVE]`**, source: [`opal-event`](https://github.com/PatMartin/opal-event). Event is simultaneously a **broker**, an **observer/persistence layer**, a **rule evaluator**, and a **bounded action executor**. It is not a general distributed transaction processor.
-
-### The four responsibilities must remain separate
-
-```text
-HTTP POST /api/v1/events/ ──► service-owned PUB ─┐
-                                                  ▼
-external publishers (PUB) ────────────────────── XSUB (:5555)
-                                                  │
-                                       transparent ZeroMQ proxy
-                                                  │
-                                                  ▼
-                                                XPUB (:5556) ──► external SUB clients
-                                                  │
-                                                  └──► internal SUB observer
-                                                          │
-                                           validate / normalize / persist
-                                                          │
-                                             topic + AND conditions
-                                                          │
-                                                bounded action queue
-                                                          │
-                                      shell / HTTP / Python subprocesses
-                                                          │
-                                                execution history/metrics
-```
-
-REST ingress enters the same XSUB pipeline as direct ZeroMQ publishers. The proxy forwards opaque messages and is not a validator. The **observer** performs normalization, validation, history persistence and rule processing. **A `202 Accepted` response means accepted for local handoff, not delivered to subscribers, persisted or executed.**
-
-### Event wire contract
-
-Every ZeroMQ message has **exactly two frames**:
-
-```text
-frame 1: opal.listen.intent.match
-frame 2: {"topic":"opal.listen.intent.match", "source":"opal-listen", "data":{"intent_name":"light_turn_on"}}
-```
-
-Minimal envelope keys: `topic` and `data`; optional `id`, `source`, `timestamp`. Listen may include a `data.metadata` object carrying schema version/correlation context. The topic is ASCII lower-case dot-separated (`^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*$`), at most 255 characters. The combined frames cannot exceed **1,048,576 bytes**.
-
-- The JSON envelope's `topic` **must equal** frame 1.
-- Send structured **references to media**, not raw images or audio inside event payloads.
-- Prefer producer-supplied stable `id` and timestamp if a downstream application needs to correlate retries.
-- Direct ZeroMQ publishers are not automatically normalized before the proxy forwards them; every external subscriber should validate what it receives.
-- ZeroMQ SUB filtering uses a **raw byte prefix**; subscribing to `opal.look.` is different from an application rule using `opal.look.*`.
-- Rules match exact topics or a suffix-`.*` hierarchical prefix; `vision.*` matches `vision.person` but not bare `vision` or `visionary`.
-- There are **no durable queues, acknowledgments, replay, retry guarantees, exactly-once semantics or cross-publisher global ordering** in v1.
-
-### Topics and naming
-
-Favor a namespace owned by the producer:
-
-| Topic | Intended meaning | Status |
-|---|---|---|
-| `opal.listen.intent.match` | Qualified live intent recognition | Implemented Listen publication topic |
-| `opal.look.detection` / `opal.look.session.*` | Vision results/session lifecycle | Proposed naming only; finalize actual catalog in Look contract |
-| `opal.think.run.*` | Agent run events, policy decisions, completed tasks | Proposed naming only; finalize actual catalog in Think contract |
-| `opal.demo.test` | Manual smoke test | Arbitrary valid event topic |
-| `vision.object.detected` | Detection example in current Event samples | Existing examples, not a requirement that Look publish this exact topic |
-
-The README deliberately distinguishes **example event topics** from normative cross-service event catalogs. Adopt a versioned catalog and explicit schemas before standardizing automated consumers.
-
-### Publishing events `[LIVE]`
-
-```bash
-# The command sends REST ingress to Event's configured HTTP endpoint:
-opal event publish vision.object.detected \
-  --data-json '{"object":"person","camera":"front_door","confidence":0.94}'
-
-opal event publish sensor.temperature.reading \
-  --data-json '{"room":"living_room","celsius":21.5}' \
-  --source sensor-node-01
-
-# Attach correlation context for an integrated workflow:
-opal event --opal-session-id sess-7 --opal-transaction-id txn-voice-42 \
-  publish opal.demo.test --data-json '{"kind":"integration_test"}'
-```
-
-Be careful with flags: `--json` placed immediately after `opal event` means **JSON output**; `--data-json` on `publish` means the **event payload**. Likewise `--json` on `rules create` and `actions create` is the JSON resource body, not the global output flag.
-
-### History, topics, and inspection `[LIVE]`
-
-```bash
-opal event topics
-opal event list
-opal event list --topic vision.object.detected --limit 20
-opal event list --source sensor-node-01
-opal event get EVENT_UUID
-opal event executions list
-opal event executions list --status failed
-opal event executions list --action-id announce_person --limit 20
-opal event executions get EXECUTION_UUID
-opal event stats
-```
-
-Event history is **for inspection, not replay**. `persistence.event_mode` determines which events are stored (`all`, `matched`, `none`); execution history is independently controlled. The sample defaults are 7-day retention, four execution workers, queue size 100 and an execution timeout of 30 seconds. Dropped work is visible as `status=dropped`, commonly `error_code=queue_full`, with no automatic retry.
-
-### Rules: exact/prefix topics plus AND conditions `[LIVE]`
-
-A rule has an ID, enabled flag, topic pattern, zero or more typed conditions and action IDs. Supported documented condition operators include `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `exists`, and `contains`. Strict JSON typing matters; `25` is not automatically interchangeable with the string `"25"`.
-
-```json
-{
-  "id": "front_door_alert",
-  "enabled": true,
-  "topic": "vision.*",
-  "conditions": [
-    {"path":"data.object", "operator":"eq", "value":"person"},
-    {"path":"data.confidence", "operator":"gte", "value":0.8}
-  ],
-  "actions": ["announce_person"]
-}
-```
-
-```bash
-opal event rules list
-opal event rules get front_door_alert
-
-# Use a JSON file to make code review and quoting easier:
-opal event rules create --file ./front-door-rule.json
-
-# Evaluate without executing any action:
-opal event rules test front_door_alert --event-json '{
-  "topic":"vision.object.detected",
-  "data":{"object":"person","camera":"front_door","confidence":0.94}
-}'
-
-# Disable before revising a potentially impactful automation:
-opal event rules update front_door_alert --json '{"enabled":false}'
-```
-
-With `opal event rules test`, inspect each `checks[]` entry to understand why a topic or condition matched. Test with a negative event too (e.g., confidence under threshold or a different object class). There is no need to execute a shell command merely to validate a predicate.
-
-### Action types and execution safety `[LIVE]`
-
-| Type | Configuration approach | Safety boundary |
-|---|---|---|
-| `shell` | Preconfigured executable + argv or explicit interpreter/script mode | Keep executable/script static; pass event data as data arguments, **not** constructed shell source |
-| `http` | Configured method, URL, headers, body mode | Enforced host/scheme/port allowlist, DNS checks, redirects disabled; guard against SSRF |
-| `python` | Allowlisted importable module and function | Separate process; JSON on stdin/stdout; timeout/output limits; **not** a strong sandbox against malicious code |
-
-Safe example action to print a camera name:
-
-```json
-{
-  "id": "announce_person",
-  "type": "shell",
-  "enabled": true,
-  "mode": "exec",
-  "executable": "/bin/echo",
-  "args": ["person detected at {{data.camera}}"],
-  "stdin": "none",
-  "timeout_seconds": 10
-}
-```
-
-```bash
-opal event actions create --file ./announce-person-action.json
-opal event actions list
-opal event actions get announce_person
-
-# Intentionally perform an action (unlike 'rules test'):
-opal event actions execute announce_person --event-json '{
-  "topic":"manual.test", "data":{"camera":"front_door"}
-}'
-
-opal event executions list --action-id announce_person
-```
-
-Templates are deliberately restricted: `{{data.path}}` and `{{event}}`, with no arbitrary expression evaluation. A placeholder alone can retain the JSON type; a placeholder embedded in text becomes a string. Missing paths are errors, not silently guessed values. A shell command that interpolates untrusted event data into executable code bypasses this important safety model — do not do that.
-
-### Manual execution versus rule dispatch
-
-A manual action execution checks the configured action and invokes it without first matching an Event rule. A published event goes through the broker and observer, is compared against enabled rules, and may enqueue *multiple independent* action executions. Their completion order is not guaranteed; either may fail while another succeeds. There is no rollback transaction encompassing all actions.
-
-### Settings, concurrent updates, backups `[LIVE]`
-
-```bash
-opal event settings get
-opal event settings update --json '{"execution":{"max_workers":4,"queue_size":100}}'
-
-# Back up portable config to a file:
-opal event backup export --output /tmp/opal-event-config.json
-
-# Validate an import before applying it:
-opal event backup validate --file /tmp/opal-event-config.json
-
-# Import with revision protection (inspect the bundle first):
-# opal event backup import --file /tmp/import-request.json
-
-opal event health
-opal event health --live
-opal event health --ready
-opal event stats
-```
-
-The settings update above is **illustrative and must be checked against the running version's portable-settings schema**; server bootstrap parameters such as bind addresses, CURVE keys, token and database path are not exposed by the portable settings API. REST mutation uses strong ETags; the Event CLI can fetch the current ETag automatically for supported operations or accept `--if-match` explicitly.
-
-### Hot reload versus restart
-
-The sample Event YAML includes `server`, `zeromq`, `security`, `execution`, `persistence`, `actions`, and `rules`. Live changes include rules/actions, worker policy and applicable retention settings. Changing network listener addresses, authentication, CURVE keys or SQLite database location requires a restart; health should expose a pending-restart state. File watching must validate changes before replacing last-known-good runtime state. Running executions keep their admitted configuration snapshot.
-
-### Example publisher and subscriber (PyZMQ) `[LIVE protocol]`
-
-```python
-# publish.py: connect PUB to Event's XSUB (incoming :5555)
-import json
-import time
-import uuid
-from datetime import datetime, timezone
-import zmq
-
-context = zmq.Context.instance()
-publisher = context.socket(zmq.PUB)
-publisher.connect("tcp://127.0.0.1:5555")
-time.sleep(0.3)  # demo slow-joiner mitigation; NOT a delivery guarantee
-
-topic = "opal.demo.sensor"
-message = {
-    "id": str(uuid.uuid4()),
-    "topic": topic,
-    "source": "demo-python",
-    "timestamp": datetime.now(timezone.utc).isoformat(),
-    "data": {"celsius": 22.5, "device_id": "sensor-1"},
-}
-publisher.send_multipart([topic.encode("utf-8"), json.dumps(message).encode("utf-8")])
-publisher.close()
-```
-
-```python
-# subscribe.py: connect SUB to Event's XPUB (outgoing :5556)
-import json
-import zmq
-
-context = zmq.Context.instance()
-subscriber = context.socket(zmq.SUB)
-subscriber.connect("tcp://127.0.0.1:5556")
-subscriber.setsockopt(zmq.SUBSCRIBE, b"opal.demo.")
-
-while True:
-    frames = subscriber.recv_multipart()
-    if len(frames) != 2:
-        continue
-    topic_bytes, body = frames
-    try:
-        event = json.loads(body)
-    except (ValueError, UnicodeDecodeError):
-        continue
-    topic = topic_bytes.decode("utf-8", errors="replace")
-    if not isinstance(event, dict) or event.get("topic") != topic:
-        continue
-    print(topic, event.get("data"))
-```
-
-Start the subscriber **before** the publisher. A PUB socket that connects immediately before sending can lose its first message while subscriptions propagate. Production systems should reconnect gracefully and explicitly choose how to tolerate missed events.
-
-### Durable workflows need something other than PUB/SUB
-
-Use Event for live telemetry, notifications and best-effort triggers. For a payment, deletion, device unlock, safety critical action or job that must definitely occur, add an external durable queue/outbox plus consumer acknowledgment, idempotency, authorization and reconciliation — **not** a false claim that Event v1 guarantees completion. Document that reliability boundary in every integration.
-
----
-## OPAL Look — the eyes (planned)
-
-**Status: `[DESIGN]` — repository is empty.** The umbrella OPAL documents describe a **model-neutral vision service**. No current Look executable, running API, CLI, container, or checked-in Look contract can be verified from `PatMartin/opal-look`; examples in this section express **desired behavior**, not installed functionality.
-
-### Why a separate vision service?
-
-Camera acquisition, frame decoding, inference and annotation need not live in a conversational agent. Look should expose a stable representation of a frame's objects and geometry regardless of whether the underlying engine is Ultralytics YOLO, ONNX Runtime, TensorRT, OpenCV, a CPU edge detector or a remotely hosted inference worker.
-
-A stable Look API is useful for monitoring a driveway, counting objects, scene indexing, animal detection, package detection and robotic perception. It should not require the client to know how models represent boxes, masks, scores or tensors.
-
-### Planned abstractions
-
-| Concept | Meaning | Intended operations |
-|---|---|---|
-| Engine | A detector/classifier runtime and its capabilities | Discover, inspect, validate, configure |
-| Model | An engine-specific model resource, known classes, task and runtime requirements | Register, list, get, validate, enable |
-| Source | A camera, RTSP stream, HTTP/MJPEG feed, local file or uploaded media handle | Register, validate, inspect, remove |
-| Task | Detection, classification, segmentation, pose, OCR, optional tracking | Declare supported capabilities, reject unsupported combinations |
-| Profile | Reusable analysis defaults (model, confidence, frame rate, task, output) | Create, validate, activate, override |
-| Analyze | One synchronous one-shot inference result | Submit image, receive normalized result |
-| Session | A controlled continuous analysis pipeline | Start, stop, inspect, monitor, stream results |
-| Result | Structured prediction tied to a frame/model/source/time | Search, retrieve, retain, expire |
-| Snapshot | Explicitly requested exact-frame image artifact | Capture from retained frame, download, delete |
-| Recording | Explicit, bounded capture of source/annotated output | Future opt-in session capability, quotas and retention |
-
-### Intended media pipeline
-
-```text
-USB/Pi camera ─┐
-RTSP stream ───┼─► Source adapter / decoder ─► frame ring buffer ─► scheduling
-Video file ───┤                                                  │
-Uploaded image─┘                                                  ▼
-                                                         Engine + registered model
-                                                                  │
-                                         ┌────────────────────────┼──────────────────┐
-                                         ▼                        ▼                  ▼
-                                 normalized result          annotations      optional tracking
-                                         │                        │                  │
-                                         ├── REST result          ├── MJPEG preview  └── temporary IDs
-                                         ├── SSE events           ├── exact-frame JPEG
-                                         ├── optional opal.look.* event
-                                         └── bounded persistence/retention
-```
-
-### Output invariants
-
-A model-specific detection result should become a model-independent record. The umbrella Look design emphasizes: origin-corrected coordinates in the **original frame**, not the network's resized tensor; normalized boxes and keypoints; documented row-major RLE for masks; per-class confidence scores; source ID, frame ID, timestamp, model/version and session ID; exact-frame snapshots that fail if the requested frame has already expired instead of silently returning a newer image.
-
-Classification, instance and semantic segmentation, pose and OCR are **design goals**, not claims of implemented MVP coverage. A sensible MVP starts with *single-class detection* and a narrow YOLO adapter, then expands in tested increments without changing the contract vocabulary.
-
-### Continuous sessions, concurrency and backpressure
-
-The model anticipates one-shot `analyze` and long-lived sessions. Multiple sessions may share one source. For bounded edge devices, design explicit limits for source count, concurrent decoders, pending frames, inference tasks, disk writes, snapshot buffers, uploads, video capture and GPU memory. Document whether overflow drops the newest frame, the oldest frame, or backpressures a producer. Require health reports to expose degraded sources and overloaded queues, not merely a green HTTP probe.
-
-### Privacy and recording
-
-The original vision emphasizes **no identity recognition by default** and **no automatic video recording**. Example retention targets from umbrella docs: observation history around 7 days and uploaded media around 24 hours; these are targets until a service enforces them. A future **opt-in recording** capability should define duration/size quotas, source/annotation output modes, cancellation, retention and privacy controls before implementation. Temporary tracking IDs should remain scoped to a session, not become persistent person identifiers.
-
-### Proposed CLI examples `[DESIGN — NOT EXECUTABLE]`
-
-```bash
-# These examples are design sketches, not installed commands.
-opal look engines list
-opal look models list
-opal look sources add front_door --type rtsp --uri 'rtsp://camera.example/stream'
-opal look sources validate front_door
-opal look profiles add people --model yolo-person --task detection
-
-# One image or a continuous camera session:
-opal look analyze ./frame.jpg --task detection --model yolo-person
-opal look sessions start --source front_door --profile people
-opal look sessions list
-opal look sessions latest SESSION_ID
-opal look sessions events SESSION_ID
-opal look sessions preview SESSION_ID
-
-# Historical evidence and explicit retained frames:
-opal look results search --session SESSION_ID --label person
-opal look results snapshot RESULT_ID
-opal look snapshots download SNAPSHOT_ID -o exact-frame.jpg
-opal look sessions stop SESSION_ID
-```
-
-The exact `sources add`, `profiles add` and related flags are **not standardized by a present implementation**. Treat these as vocabulary and intended discoverability; determine argument names in a reviewed Look contract before generating a CLI.
-
-### Look integration with Event
-
-Look should publish small, validated observations such as a result ID, session/source ID, class label and confidence. Consumers can resolve richer structured results or snapshots through REST on demand. Zone crossing, event aggregation, notification rules and home-automation actions belong in Event or a higher-level policy consumer, **not hardcoded into the detector**. A new model should not require editing home-automation code.
-
----
-
-## OPAL Think — the brain (planned)
-
-**Status: `[DESIGN]` — repository is empty and the historical Think contract is explicitly incomplete.** This section lays out the intended reasoning architecture, with a **separately labeled next-generation guarded agent concept**. No Think command below is currently runnable.
-
-### Why Think must remain independent
-
-Reasoning engines evolve quickly; an OPAL application should be able to switch between a local Ollama server, a specialized local model, an OpenAI-compatible inference API, a hosted model provider, or an agent framework without rewriting audio, events, tools and user interfaces. Think exposes consistent **models/providers**, **generations**, **conversations**, **agents**, **runs**, **tools** and **memory**. It does **not** capture microphones or cameras or play audio.
-
-### Four layers of inference
-
-| Layer | Persistence | Tools | Operational intent |
-|---|---|---|---|
-| **Generation** | Stateless request/response | None by default | Classification, summarization, transformation, analysis |
-| **Conversation** | Message history | Optional by explicit future contract | Multi-turn user dialogue with a chosen model |
-| **Agent** | Reusable definition | Explicit allowlist and policy | Goal-oriented reasoning with constrained capabilities |
-| **Run** | Auditable lifecycle, steps, usage and output | Governed tool calls and delegation | Long-running or asynchronous agent workflow with trace/cancel |
-
-A model is not an agent. A conversation is not necessarily a tool-using agent. A run is not simply a blocking text-generation call. Preserve these distinctions so simple inference stays inexpensive, testable and side-effect-free.
-
-### Providers, models and adapters
-
-Proposed adapter choices include a local **Ollama** provider, OpenAI-compatible HTTP endpoints, hosted providers, and higher-level runtimes such as Google ADK or LiteLLM. None should be a hard wire dependency. Each registered model should declare context limits, tool-use support, structured-output support, streaming ability, image/audio capabilities when applicable, and invocation constraints. Validate features at request time: unsupported inputs should produce a clear error, not a silently reduced answer.
-
-An adapter should normalize streaming deltas, tool-call arguments, final responses, usage accounting, model errors, cancellation and timeouts. Handle partial failure and provider disconnection explicitly. Keep credentials in protected secret references/environment, not exported configuration bundles or model messages.
-
-### Planned agent/tool policy model
-
-```text
-User/API goal
-  ▼
-Choose agent + model + bounded budget
-  ▼
-Plan → propose tool call / child delegation
-  │
-  ├── policy check: is capability registered and enabled?
-  ├── policy check: is this agent permitted to call it?
-  ├── policy check: arguments/scope/target allowed?
-  ├── policy check: depth/loop/budget/time/token limits satisfied?
-  ├── policy check: is approval required for a mutation?
-  │
-  ├── DENY → explicit trace entry, no execution
-  └── ALLOW → execute through the allowed adapter / Event action
-                       │
-                       └── return structured result to run trace
-  ▼
-Verify state / decide to continue, delegate, finish or cancel
-  ▼
-Persist trace and response; publish lifecycle events if enabled
-```
-
-**Autonomous reasoning must not imply unlimited authorization.** A model can decide **which authorized tools** to use, in which order, and when to stop; it cannot acquire permission by writing instructions to itself. Run-time server policy is evaluated **for every tool call and every delegation**, not merely once when the agent definition is saved. Denied operations fail closed and remain auditable. Event independently enforces destination allowlists, execution controls and audit records for its own actions.
-
-### Conversations, memory and context
-
-Conversation history is a user-facing timeline. The model's *context window* is a transient, bounded selection from that timeline; trimming the context should not erase the stored conversation. Memory is a separate **opt-in, namespaced store** (service/agent/conversation), with explicit search, retention, provenance and deletion policies. Do not leak data between tenants, users, profiles or unrelated agents because a model happened to request it.
-
-### Runs, budgets and delegation
-
-Run objects should expose queued/running/completed/failed/cancelled states, step traces, model usage, tool input/output summaries, errors and timestamps. Multi-agent delegation must have explicit allowed child agents, a bounded depth and a **shared budget** so a parent cannot avoid limits by spawning children. Loop protection is needed at both agent-planning and Event-action layers; repeated tool arguments, repeated causation paths and excessive event depth should lead to a safe stop.
-
-### Guarded autonomous systems troubleshooting `[FUTURE — DESIGN PROPOSAL]`
-
-A high-value future Think agent is a **systems troubleshooting copilot** that uses progressive discovery instead of guessing. The design sequence is:
-
-```text
-OBSERVE current state (read-only)
-   ↓
-DIAGNOSE symptoms and generate competing hypotheses
-   ↓
-COLLECT targeted evidence, revise probabilities and plan
-   ↓
-SIMULATE changes (dry-run package manager, planned diff, impact)
-   ↓
-EVALUATE safety: privileges, data loss, service outage, rollback
-   ↓
-REQUEST APPROVAL before privileged or destructive mutations
-   ↓
-EXECUTE one approved, bounded step
-   ↓
-VERIFY expected outcome and unintended side effects
-   ├── success → record evidence and finish
-   └── failure → rollback or revise hypothesis and iterate
-```
-
-This is particularly relevant to Linux/Ubuntu service recovery, GPU drivers, package management and deployments. **Dry-run output is evidence, not authorization**. Prefer immutable audit records containing observation, hypothesis, proposed command, expected effect, risk category, approval, actual result and verification. Set a strict maximum number of iterations and avoid executing a self-generated shell string in a privileged environment. Actual system administration tools should live behind their own allowlists/approval rules and be invoked as structured operations, not arbitrary unrestricted terminal access.
-
-### Human approvals and safety categories `[FUTURE]`
-
-| Class | Example | Recommended behavior |
-|---|---|---|
-| Read-only | Inspect service health, list GPU driver modules, query package versions | Permit to approved agent; log results |
-| Simulated | `apt-get -s`, config diff, proposed migration validation | Permit where safe; report uncertainty |
-| Reversible low-impact | Restart a noncritical development service | Allow only under explicitly delegated policy; verify |
-| Privileged mutation | Install/remove packages, change firewall, modify systemd | Explicit informed approval and checkpoint |
-| Destructive/high-impact | Delete data, alter network route, disable security, flash firmware | Deny by default; stronger approval and recovery plan |
-
-The original OPAL Think vision permits autonomous *tool use*, but these approval gates should be enforced in the service's tools/policy layer, not left to a system prompt or a model's promises.
-
-### Proposed Think commands `[DESIGN — NOT EXECUTABLE]`
-
-```bash
-# Provider- and model-neutral operations:
-opal think providers list
-opal think providers add local-ollama --url http://127.0.0.1:11434
-opal think models list
-opal think models add local-coder --provider local-ollama --ref MODEL_NAME
-
-# Isolated generation versus durable conversation:
-opal think generations create 'Summarize this diagnostic trace.' --model local-coder
-opal think conversations create
-opal think conversations respond CONVERSATION_ID 'What happened since yesterday?'
-opal think conversations messages CONVERSATION_ID
-
-# Registered agents, tools, workflows and memory:
-opal think tools list
-opal think agents add diag_agent --instructions 'Observe and propose, never mutate without approval'
-opal think runs create diag_agent --input 'Investigate service errors'
-opal think runs events RUN_ID
-opal think runs cancel RUN_ID
-opal think memory search 'last successful service configuration'
-```
-
-The flag signatures above are **examples of intended UX**, not vetted CLI syntax. Ollama's models need not be local to the Think process; they may be reachable over a protected LAN. A future OpenAI/ChatGPT integration would be a **configured external provider or explicitly authorized application connection**, never a hardcoded requirement of OPAL.
-
----
-
-## Cross-service recipes
-
-These recipes distinguish **currently runnable primitives** from **integration glue you must supply** and **future Look/Think scenarios**. All sample paths, IDs and model names are placeholders until created locally.
-
-### Recipe 1 — smoke-test Event without a camera or LLM `[LIVE]`
-
-**Goal:** verify REST ingress, ZeroMQ routing, a rule, a safe action and audit history. This can be completed with only OPAL Event.
-
-1. Run Event using the installation procedure above.
-2. Create a harmless `echo` action in `echo-action.json`:
-
-```json
-{
-  "id": "echo_detection",
-  "type": "shell",
-  "enabled": true,
-  "mode": "exec",
-  "executable": "/bin/echo",
-  "args": ["Detected {{data.object}} at {{data.camera}}"],
-  "stdin": "none",
-  "timeout_seconds": 5
-}
-```
-
-3. Create `echo-rule.json`:
-
-```json
-{
-  "id": "demo_detection",
-  "enabled": true,
-  "topic": "vision.object.detected",
-  "conditions": [
-    {"path": "data.object", "operator": "eq", "value": "person"}
-  ],
-  "actions": ["echo_detection"]
-}
-```
-
-4. Register the action, test the rule and publish a sample event:
-
-```bash
-opal-event actions create --file echo-action.json
-opal-event rules create --file echo-rule.json
-
-# Dry-run: validate the predicate but execute nothing.
-opal-event rules test demo_detection --event-json '{
-  "topic":"vision.object.detected",
-  "data":{"object":"person","camera":"front_door"}
-}'
-
-# Actual event routing; expect an accepted receipt, NOT an execution result.
-opal-event publish vision.object.detected \
-  --data-json '{"object":"person","camera":"front_door"}'
-
-# Inspect the actual execution, including stdout/error/status:
-opal-event executions list --action-id echo_detection
-opal-event stats
-```
-
-You should expect an execution record **if the broker, observer, subscription path and rule are operating and the event was delivered**. Because ZeroMQ is best effort, do not infer that a 202 receipt guarantees a corresponding action record. Prefer a long-running service-owned publisher/subscriber, not a one-shot new PUB client, for integration tests.
-
-### Recipe 2 — recognize and act on a voice command `[LIVE primitives; wiring required]`
-
-The desired path is `Listen microphone → confirmed intent → Event topic → rule → controlled action`. Configure the Listen microphone, Vosk provider, wakeword and live pipeline first; verify with `opal listen test listen-debug`. Then enable publication:
-
-```bash
-opal listen system doctor
-opal listen test text 'computer, turn on the kitchen lights' --expect-intent light_turn_on
-opal listen test regression
-opal listen settings set event_publication_enabled true
-opal listen pipeline start
-```
-
-**Important:** `test text` is a non-actionable diagnostic; it intentionally does **not** dispatch a live intent to Event. To exercise Event with a synthetic event:
-
-```bash
-opal-event publish opal.listen.intent.match --data-json '{
-  "intent_name":"light_turn_on",
-  "slot_values":{"room_name":"kitchen"}
-}'
-```
-
-A minimal rule matching the intent event (after inspecting the **actual** current live event payload) might be:
-
-```json
-{
-  "id": "lights_on_intent",
-  "enabled": false,
-  "topic": "opal.listen.intent.match",
-  "conditions": [
-    {"path":"data.intent_name","operator":"eq","value":"light_turn_on"}
-  ],
-  "actions": ["your_approved_light_action"]
-}
-```
-
-The action ID must exist and be explicitly registered; no `your_approved_light_action` exists automatically. Keep this rule **disabled** until payload matching, authorization and the destination device's behavior are verified. A production action should enforce a small device/control allowlist, reject unknown room names, and be idempotent where practical.
-
-### Recipe 3 — make Event trigger spoken audio `[LIVE primitives; custom integration]`
-
-Talk can synthesize audio, but **Talk deliberately does not play it**. Therefore a rule that directly calls Talk's HTTP generate endpoint does **not** inherently produce a sound. You need an audio sink/consumer on the host connected to the speakers.
-
-One possible trusted integration is a **preinstalled** shell wrapper on the playback host:
-
-```bash
-#!/usr/bin/env bash
-# /opt/opal/bin/speak-announcement  (operator-installed, reviewed and executable)
-set -euo pipefail
-[[ $# -eq 1 ]] || exit 2
-# Constrain text length to avoid a runaway announcement; use an explicit local CLI path.
-text=${1:0:500}
-/opt/opal-talk/.venv/bin/opal-talk generate "$text" \
-  --stream --sample-rate 22050 -o - \
-  | /usr/bin/aplay -t raw -f S16_LE -c 1 -r 22050
-```
-
-Example associated Event action:
-
-```json
-{
-  "id": "speak_person_alert",
-  "type": "shell",
-  "enabled": true,
-  "mode": "exec",
-  "executable": "/opt/opal/bin/speak-announcement",
-  "args": ["A person was detected at {{data.camera}}."],
-  "stdin": "none",
-  "timeout_seconds": 30
-}
-```
-
-The paths are illustrative; adapt them to your service and playback host. Review event-string validation and shell-wrapper permissions first, then test the action manually. **The action executes where Event runs.** If the speakers live on a different Pi, use a small dedicated playback agent/HTTP bridge on that Pi rather than assuming Event can play sound remotely.
-
-### Recipe 4 — add a new natural-language command safely `[LIVE]`
-
-```bash
-# Add or select a canonical value:
+# Add a place to a room-name slot if that slot already exists.
 opal listen slots add-value room_name garage
 
-# Add phrase templates for a controlled intent:
+# Expand an existing intent with a natural way to say the same thing.
 opal listen intents add-phrase light_turn_on \
   'switch on [the] {room_name} (light | lights)'
 
-# Confirm with text and audio fixtures:
-opal listen test text 'switch on the garage lights' \
+# Check the result before hooking anything up.
+opal listen test text "switch on the garage lights" \
   --expect-intent light_turn_on
-opal listen regression add garage_lights_on \
-  'switch on the garage lights' \
-  --expect-intent light_turn_on --slot room_name=garage
-opal listen test regression
 ```
 
-If a phrase already exists, the API may reject a duplicate or return an existing catalog entry; review before adding. Avoid testing a newly enabled event-to-device action by accidentally saying an actual dangerous command into a live microphone.
+The square brackets mean “optional words.” Parentheses offer alternatives. The braces hold a slot. It is like teaching a tiny robot grammar instead of asking a giant LLM to understand everything.
 
-### Recipe 5 — a camera sees a visitor, an agent explains it, Talk announces it `[DESIGN]`
+**What you need:** A suitable model and microphone for live listening; the sample seeded intents and slots may differ if you have changed your configuration.
 
-**Not runnable end-to-end** until Look and Think exist:
+### Adventure 2: Build a talking announcement machine — WORKS TODAY
 
-```text
-Look source front_door
-   └─ detect person with confidence + session/result/frame IDs
-       └─ Event receives opal.look.* event
-           ├─ rule-based deterministic threshold and suppression
-           └─ Think agent receives approved context/reference
-               ├─ may fetch allowed vision snapshot/result via REST
-               ├─ may compare recent observations via read-only tools
-               ├─ must not identify a person without explicit scoped capability
-               └─ proposes a concise announcement
-                   └─ approved playback integration calls Talk
-                       └─ Piper/Kokoro PCM to audio sink
-```
-
-The raw video remains at the vision host. Events carry IDs/URIs and small observations. The agent sees only the images, metadata and tools authorized for the task. A simple person alert should continue to work if Think or the GPU is offline.
-
-### Recipe 6 — model and device placement `[LIVE + FUTURE]`
-
-A low-resource Raspberry Pi can run Listen and possibly Piper. A more capable local machine can host Kokoro, model inference and future YOLO/Think containers. Configure service URLs **as explicit environment/settings values**, so clients do not infer network locations from service names. Benchmark model load time, audio latency, recognition quality, GPU contention and idle memory independently. Prefer one service process per responsibility and keep GPUs behind dedicated workers or adapters, not inside a blocking REST request handler.
-
-### Recipe 7 — inspect a failing Event automation `[LIVE]`
+Want a funny welcome, a timer announcement, or an audio story generator?
 
 ```bash
-opal-event health --ready
-opal-event stats
-opal-event rules list
-opal-event actions list
-opal-event executions list --status failed --limit 20
-opal-event executions list --status dropped --limit 20
+opal-talk generate \
+  "Attention everyone. The kitchen has been declared a cookie-friendly zone." \
+  -o announcement.wav
 
-# Validate a problematic rule with a known sample, with no side effects:
-opal-event rules test RULE_ID --event-json '{
-  "topic":"vision.object.detected","data":{"object":"person"}
+ffplay -autoexit -nodisp announcement.wav
+```
+
+Need to speak while the rest of the sentence is still being generated? Stream raw audio to a speaker:
+
+```bash
+opal-talk generate \
+  "This sentence can begin playing before it is fully generated." \
+  --stream --sample-rate 22050 -o - \
+  | aplay -t raw -f S16_LE -c 1 -r 22050
+```
+
+The sample rate on both sides must match. On a server without speakers, send the audio to a separate playback process or device.
+
+### Adventure 3: Make your first event rule — WORKS TODAY
+
+Pretend your workshop is getting too warm. We will create a rule but leave it **disabled**. The test will check logic without executing any action.
+
+First create an event action that only prints a message:
+
+```bash
+opal-event actions create --json '{
+  "id": "announce_hot_workshop",
+  "type": "shell",
+  "enabled": true,
+  "mode": "exec",
+  "executable": "/bin/echo",
+  "args": ["Workshop temperature is {{data.celsius}} C"],
+  "stdin": "none",
+  "timeout_seconds": 10
 }'
 ```
 
-Diagnose in order: (1) was an event produced, (2) did the observer see a valid event, (3) did the rule match, (4) was work admitted or dropped, (5) did the action start, (6) what did it return, (7) did an external target actually change? **Each is a separate observable fact**. This is the same progressive-discovery style future Think agents should use.
-
-### Recipe 8 — safe upgrade of an API contract `[LIVE process]`
-
-```text
-1. Snapshot current service contract SHA and running package version.
-2. Copy candidate contract into a feature branch of opal-api.
-3. Run Redocly and Spectral OPAL convention checks.
-4. Review semantic diffs: paths, operationIds, fields, defaults, status codes.
-5. Determine whether each change is additive, behavioral or breaking.
-6. Implement server routes/schemas/tests on a service branch.
-7. Verify response schemas and correlation headers against the candidate.
-8. Verify every implemented operation's CLI and SPA coverage.
-9. Run integration, migration, rollback and client compatibility suites.
-10. Release the service and publish the matching version/commit pair.
-```
-
-This preserves the core OPAL principle: *the contract is reviewed before code, but an API repository version bump is not proof of a deployed implementation*.
-
----
-
-## REST and CLI conventions in practice
-
-### Service endpoint resolution
-
-Per-service clients should resolve `--api-url` over environment variable over documented local defaults. Always display the target hostname in diagnostic output when multiple devices are running. The ability to point at remote services is central to OPAL; the CLI should avoid importing a local engine, local SQLite connection or local provider just to make an HTTP request.
+Now create the rule:
 
 ```bash
-# Example event command with remote API target:
-opal-event --api-url 'http://127.0.0.1:8080' --json rules list
-
-# Example talk command with raw JSON output:
-opal-talk --json voices list
-
-# Example listen global options (must precede the resource group):
-opal listen --api-url 'http://127.0.0.1:8000' --json intents list
+opal-event rules create --json '{
+  "id": "hot_workshop",
+  "enabled": false,
+  "topic": "sensor.temperature.reading",
+  "conditions": [
+    {"path": "data.room", "operator": "eq", "value": "workshop"},
+    {"path": "data.celsius", "operator": "gt", "value": 30}
+  ],
+  "actions": ["announce_hot_workshop"]
+}'
 ```
 
-**Global option placement varies by subapp and the standalone console script.** For Event and Talk, place common flags before the command group (e.g. `opal event --json rules list` and `opal talk --json voices list`), or after the standalone script (`opal-event --json rules list`). For Listen, place them after `listen`. Do not copy a single flag pattern blindly across every subcommand.
-
-### Machine-readable CLI and scripting
-
-Use raw JSON output when joining commands with `jq` or writing shell automation:
+Dry-run the rule:
 
 ```bash
-opal-event --json rules list | jq '.'
-opal-talk --json voices list | jq '.'
-opal listen --json intents list | jq '.'
-
-# Health checks for scripts (inspect real exit codes and readiness semantics):
-if opal-event health --ready; then
-  echo 'Event is ready'
-else
-  echo 'Event is not ready' >&2
-fi
+opal-event rules test hot_workshop --event-json '{
+  "topic": "sensor.temperature.reading",
+  "data": {"room": "workshop", "celsius": 31.5}
+}'
 ```
 
-CLI exit codes conventionally distinguish success from API/validation failure and from malformed CLI invocation/unreachable server; inspect the specific service CLI document for exact mappings. Do not parse human-readable table output when a JSON option exists.
+If the checks match, the result should show `matched: true`. **Nothing is executed by a rule test.** You can inspect the action and decide whether to enable the rule later.
 
-### API changes must be backward-aware
-
-- Add fields where clients can ignore them; avoid renaming request/response keys without a migration period.
-- Include `operationId` stability in compatibility reviews. Generated clients and CLI route parity depend on it.
-- Use typed HTTP errors for invalid configuration and unsupported capabilities.
-- Document all binary/stream response headers and error behavior before data starts flowing.
-- Keep pagination behavior explicit; do not paginate small configuration catalogs merely for uniformity.
-- Do not change a ZeroMQ **wire schema** solely because the OpenAPI `info.version` changed.
-
----
-
-## Contracts, versioning and compatibility
-
-### Three distinct version axes
-
-1. **REST contract version:** `openapi/opal_*.yaml` `info.version`; describes the public request/response interface.
-2. **Implementation/package release:** the running service and Python package version (`pyproject.toml` plus deployed commit); determines actual capability.
-3. **Event envelope/wire schema version:** metadata such as `schema_version: "2.0"` and the separate ZeroMQ transport specification; determines how consumers interpret event frames.
-
-Do not treat these as the same string. Version a service independently, but validate suite-level interoperability at shared boundaries.
-
-### Current version matrix (observed in repository files)
-
-| Service | Central `opal-api` spec | Active local service contract | Python package | Status |
-|---|---|---|---|---|
-| Event | `1.4.0` | `1.2.0` (`opal_event.1.2.0.yaml`) | `1.2.0` | Central spec **ahead of implementation** |
-| Listen | `1.4.0` | `1.3.0` (`opal_listen.yaml`) | `0.1.0` | Contract and package release version differ |
-| Talk | `1.4.0` | `1.2.0` (`opal_talk.yaml`) | `1.2.0` | Central spec **ahead of implementation** |
-| Look | Not checked in | None in empty service repository | None | Planned |
-| Think | Not checked in | None in empty service repository | None | Planned; recovered historical draft not authoritative |
-
-**Caution:** descriptions embedded in some centrally published 1.4.0 YAML still mention older suite-standard/version text. Until normalized, prefer the explicit `info.version` for the *document version* and the actual schemas/operations for behavior. A version label alone is not a complete semantic diff.
-
-### Contract validation and publishing strategy
-
-`opal-api` currently validates all YAML files in `openapi/` through Redocly (`npm run validate`), a generic Spectral ruleset (`npm run lint`), and OPAL-specific conventions (`npm run lint:opal`). Enforce `operationId` uniqueness, local `$ref` resolution, valid examples, API correlation headers, error representations and request-context behavior. Keep contract sources separate from generated artifacts, implementation code and stale copies to avoid giving code-generation agents conflicting authority.
-
-**Recommended release pipeline `[FUTURE]`:**
-
-```text
-opal-api change (PR)
-    ├─ structural/schema lint
-    ├─ semantic breaking-change report
-    ├─ API operations inventory
-    └─ approval + immutable contract tag
-           │
-           ├─ publish versioned contract artifact
-           ├─ open/update implementation branch in target service
-           ├─ server + CLI + GUI + tests updated together
-           └─ service release pins source contract SHA and tested commit
-```
-
-A single suite repo can remain the canonical contract owner while each service repo consumes a pinned contract artifact and records its provenance (version + source SHA), ideally through automation rather than copying files by hand. Keep a small current-contract working set and archive old contracts as release artifacts/tags, not dozens of indistinguishable files in the working tree.
-
-### Recommended error contract
-
-A uniform, machine-readable error should include a stable `error_code`, a human-readable `message`, typed contextual `details`, and correlation headers. Do not conflate FastAPI validation details with a business-domain error unless the contract explicitly defines a common mapping. Validate error responses in the same test suites as success cases and check that `X-Opal-*` headers are returned consistently on 4xx/5xx, redirects, streaming and binary responses when applicable.
-
-### API-first AI-assisted development workflow
-
-The core OPAL build technique is suitable for AI coding tools because the work can be decomposed into verifiable, bounded commits:
-
-```text
-Requirement / desired behavior
-    ↓
-Clarify entities, responsibilities, boundaries and non-goals
-    ↓
-Draft one authoritative OpenAPI contract (+ transport spec if needed)
-    ↓
-Validate and review invariants, failures, capabilities and concurrency
-    ↓
-Produce an implementation plan as small, cohesive changes
-    ↓
-Implement one REST capability with mocked dependencies
-    ↓
-Write contract tests and error/edge-case tests
-    ↓
-Add a CLI command that calls REST only
-    ↓
-Add a SPA capability that calls REST only
-    ↓
-Verify operation parity + integration + performance
-    ↓
-Commit with tests, contract version and rationale
-    ↓
-Repeat until every operation is covered
-```
-
-For coding assistants, request an **investigate → verify → fix (only if confirmed) → test → commit** sequence. One prompt should map to one coherent Git commit, with explicit acceptance criteria and no broad unrelated rewrites. Maintain `AGENTS.md` instructions in each service repo describing architecture boundaries, service commands, conventions, test commands, immutable or pinned contracts, and when authorization is required. The prompt should explicitly warn not to implement undeclared REST endpoints or paper over incompatible responses.
-
----
-
-## Security and trust boundaries
-
-Local-first does not automatically mean secure. OPAL runs near microphones, video feeds, model assets, devices and sometimes shell actions. The following should be treated as architectural requirements, not optional polish.
-
-| Boundary | Safeguard |
-|---|---|
-| REST network surface | Bind loopback by default where supported; authenticate/authorize when exposed; use TLS at appropriate network boundaries |
-| Event transport | Use CURVE plus explicit client public-key authorization for non-loopback connections; CURVE alone is not a topic ACL |
-| Event payload | Treat input as untrusted; validate topic, frame count, envelope, payload size and schema independently at each trust boundary |
-| Shell | Static executable/argv allowlist, unprivileged OS user, timeouts, output limits; never concatenate untrusted event text into shell source |
-| HTTP actions | Scheme/host/port allowlist, DNS verification, deny redirects, block metadata/local-link targets unless explicitly authorized |
-| Python plugins | Registered modules, isolated subprocess and resource limits; acknowledge that a subprocess is **not** a strong sandbox |
-| Agent tools | Explicit tool registration/allowlist and run-time policy on **every** use; approval for important mutations |
-| Models and voices | Reference host-installed resources; restrict paths, verify files/permissions; do not upload executables under a model filename |
-| Private media | Retention, user authorization, upload limits, redaction, secure storage, no automatic indefinite recording |
-| Secrets | Environment/secret store, never REST-export/backup, log, embed in OpenAPI examples or expose through a SPA bundle |
-| Correlation IDs | Treat as trace data, not authentication or authorization |
-
-### Localhost versus LAN versus internet
-
-A local loopback deployment is simpler than a LAN deployment; exposing a node to a LAN changes the threat model, and making it public changes it again. For a multi-host network, decide which services need remote access at all. Where possible, keep model runtimes private and expose only the approved REST gateway/bridges. Use a reverse proxy such as Caddy for TLS when appropriate, but document its hostnames, trust model and authentication **as a separate deployment concern**. Do not put raw security tokens in CLI examples used in shell history on shared machines.
-
-### Agent tools must not outrank service policy
-
-When Think eventually calls an Event action or a filesystem tool, it should not get more privileges than a human user with the same role would have. Approvals should describe the exact operation and target, proposed diff, potential impact and rollback approach. Logs should preserve the *decision path*, not private chain-of-thought text or unredacted credentials. Consider quotas and per-tool concurrency limits in addition to token budgets.
-
----
-
-## Observability, reliability and performance
-
-### What to measure
-
-| Layer | Useful metrics and diagnostics |
-|---|---|
-| Listen | Mic availability, VAD activity, wakeword false positive/negative rate, STT duration, intent match rate, failed utterances, dropped audio blocks, refinement utilization |
-| Talk | Engine availability, voice validation, model load/cache misses, first-audio latency, total synthesis time, real-time factor, output sample rate, streaming errors |
-| Event | PUB/SUB connectivity, invalid events, incoming event rate, observer drops, match counts, worker queue depth, failed/timed-out/dropped executions |
-| Look (future) | Source uptime, decode rate, inference FPS, model latency, GPU utilization, result queue depth, ring-buffer eviction, snapshot quota and recording disk use |
-| Think (future) | Model latency, token usage, run duration, tool counts, denial/approval rates, repeated-plan detection, memory hit rate, cancellation time |
-| Suite | Common transaction tracing, cross-service failure propagation, contract/version mismatch and per-node resource pressure |
-
-### Design for degraded operation
-
-If Think is unavailable, basic deterministic Listen → Event automations should still work. If Talk is unavailable, the system may issue a visual or log notification rather than pretending it spoke. If Look is offline, detection-dependent rules should not hallucinate a detection. Health should distinguish **live** (process is responding) from **ready** (required dependencies are usable) and **degraded** (limited function), including pending restart or invalid hot-reload conditions.
-
-### Best-effort does not mean invisible
-
-Event may drop messages when a subscriber is not ready; its action queue may overflow and produce `dropped` records. Listen may discard audio blocks under overload and must report counters. A future Look may intentionally skip video frames to stay current. A future Think may cancel a run on budget exhaustion. All these behaviors should be explicit metrics and documented contracts, never hidden retries that multiply side effects.
-
----
-
-## Development, testing and quality gates
-
-### Repository-specific commands `[LIVE]`
-
-**Event**
+To test a specific registered action yourself (this **does execute** it):
 
 ```bash
-cd ~/src/opal-suite/opal-event
+opal-event actions execute announce_hot_workshop --event-json '{
+  "topic": "sensor.temperature.reading",
+  "data": {"celsius": 31.5}
+}'
+
+opal-event executions list
+```
+
+Notice the pattern: **create → inspect → test → allow action → inspect outcome**. That is a good habit for automations, and an essential habit for future AI agents.
+
+### Adventure 4: Turn “computer, lights on” into a real automation — NEEDS GLUE
+
+The pieces already exist:
+
+```bash
+# Confirm Listen understands the phrase.
+opal listen test text \
+  "computer, turn on the kitchen light" \
+  --expect-intent light_turn_on
+
+# Test Event separately with a synthetic intent message.
+opal-event publish opal.listen.intent.match --data-json '{
+  "intent_name": "light_turn_on",
+  "slot_values": {"room_name": "kitchen"}
+}'
+```
+
+For the actual automation, connect Listen's *live* recognition events to Event, register a trusted device-control action, and create a rule matching the real event payload. Live publication is configurable; diagnostic speech tests do **not** automatically publish an actionable intent.
+
+Then a spoken phrase can become a light-control request, without sending the phrase to an LLM.
+
+**Needs glue:** A real light integration, an approved Event action, and verified event routing. OPAL does not come with a magic “all your lights are now connected” switch.
+
+### Adventure 5: “Who's on my porch?” — FUTURE DESIGN
+
+This is where Look gets exciting. The [current central Look 1.4.0 contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml) describes camera sources, processing pipelines, raw and annotated video, motion filters, live sessions, finite jobs, observations, snapshots, captures, rules, and monitors.
+
+The **intended** CLI is generated from that contract, with names such as `sources`, `pipelines`, `sessions`, and `monitors`. This is a **design sketch, not runnable code**:
+
+```bash
+# FUTURE DESIGN — commands/options must match the implemented Look CLI.
+opal look sources list
+opal look sources show front_door
+opal look sources probe front_door
+
+# A processing pipeline could detect objects and add annotations.
+opal look pipelines list
+opal look pipelines show porch_detection
+
+# A live session would produce ongoing observations.
+opal look sessions list
+opal look observations list
+```
+
+The design also supports a simple viewer: show a camera feed, optionally apply a motion filter, and turn annotations on or off. The REST contract already includes a direct camera stream endpoint:
+
+```http
+GET /api/v1/sources/{source_id}/stream
+```
+
+That is a **specification**, not a claim that an OPAL Look server is available today.
+
+A future end-to-end adventure could look like this: camera sees person → Look generates an observation → Event routes a message → Think decides what to say → Talk generates “Someone's at the door.” Nothing in the design needs the camera to be owned by a language model.
+
+### Adventure 6: Give your assistant a cautious brain — FUTURE DESIGN
+
+Someday you might ask:
+
+> “OPAL, my graphics driver stopped working. Figure out why, but do not change anything without asking.”
+
+The planned Think service should follow a clear, inspectable process:
+
+```text
+Observe the problem
+     ↓
+Collect evidence
+     ↓
+Suggest likely causes
+     ↓
+Test or simulate possible fixes
+     ↓
+Explain risks and ask permission
+     ↓
+Make the approved change
+     ↓
+Check whether it worked
+     ↓
+Revert or revise if needed
+```
+
+That is **guarded autonomy**: useful AI that can investigate freely within read-only bounds, but cannot turn a guess into an unauthorized system change. There is no runnable Think CLI yet.
+
+---
+
+## The big command tree
+
+Here is the OPAL command language in one picture. The **working** sections reflect the current service CLI guides. The **planned** sections are the intended surface, not executable software. This is a learning map; see the linked per-service command references for every option.
+
+```text
+opal
+├── listen                                      WORKING (in Listen's CLI)
+│   ├── wakewords    list | get | add | update | remove
+│   ├── intents      list | get | add | update | remove
+│   │                phrases | add-phrase | remove-phrase
+│   ├── slots        list | get | add | update | remove
+│   │                values | add-value | remove-value
+│   │                aliases | add-alias | remove-alias
+│   ├── profiles     list | get | add | update | activate | remove
+│   ├── settings     list | set
+│   ├── test         text | audio | listen | listen-debug | regression
+│   ├── pipeline     start | stop | status
+│   ├── failed       list | get | add | update | remove | promote
+│   ├── regression   list | get | add | update | remove
+│   ├── logs         list | get | count
+│   ├── perf         last | summary | history
+│   ├── config       validate | backup | backups | restore | export | import
+│   ├── system       doctor | devices | live | ready | info | ping
+│   └── event        publish
+│
+├── talk                                        WORKING (or opal-talk)
+│   ├── engines      list | get | update | validate
+│   ├── voices       list | get | add | update | remove | validate | test
+│   ├── profiles     list | get | add | update | remove | activate
+│   ├── generate     TEXT -o FILE [--stream]
+│   ├── settings     list | get | set | delete
+│   ├── backup       list | create | download | restore | delete
+│   │                export | import | validate
+│   ├── health
+│   ├── info
+│   └── ping
+│
+├── event                                       WORKING (or opal-event)
+│   ├── publish      TOPIC --data-json JSON
+│   ├── list | get | delete | clear
+│   ├── topics
+│   ├── rules        list | get | create | update | delete | test
+│   ├── actions      list | get | create | update | delete | execute
+│   ├── executions   list | get
+│   ├── settings     get | update
+│   ├── backup       export | validate | import
+│   └── health
+│
+├── look                                        DESIGNED — NOT RUNNABLE
+│   ├── capabilities
+│   ├── engines      list | show | add | update | remove
+│   ├── models       list | show | add | update | remove
+│   ├── sources      list | show | add | update | remove | probe | stream
+│   ├── pipelines    list | show | add | update | remove | validate
+│   ├── profiles     list | show | add | update | remove | activate
+│   ├── analyze      image | source
+│   ├── sessions     list | show | start | stop | stream | preview
+│   ├── jobs         list | show | start | cancel
+│   ├── observations list | show
+│   ├── media        list | show | upload | remove
+│   ├── captures     list | show | capture | download
+│   ├── artifacts    list | show | download
+│   ├── zones        list | show | add | update | remove
+│   ├── rules        list | show | add | update | remove
+│   ├── monitors     list | show | add | update | remove
+│   ├── recordings   list | show | start | stop
+│   ├── settings     get | set | reset
+│   └── health
+│
+└── think                                       FUTURE — SUBJECT TO DESIGN
+    ├── providers    list | show | configure
+    ├── models       list | show
+    ├── generate     text | stream
+    ├── sessions     start | show | list | close
+    ├── agents       list | show | add | update
+    ├── tools        list | show | test
+    ├── runs         start | show | watch | cancel
+    ├── approvals    list | show | approve | reject
+    ├── memory       search | list
+    └── health
+```
+
+The Look tree above is a **human-friendly overview** of the central contract's resources, not a checked generated command inventory. Think verbs are **illustrative only**.
+
+For exact commands, use the living references:
+
+- [Listen CLI](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md)
+- [Talk CLI](https://github.com/PatMartin/opal-talk/blob/main/docs/CLI.md)
+- [Event CLI](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md)
+- [Central OpenAPI contracts](https://github.com/PatMartin/opal-api/tree/main/openapi)
+
+---
+
+## How OPAL works
+
+### Every service has three doors
+
+```text
+        Your terminal               Browser UI               Your app
+           (CLI)                       (SPA)                  (script)
+             \                           |                       /
+              \                          |                      /
+               +------------------- REST API ------------------+
+                                      |
+                               OPAL service
+                                      |
+                           engines, models, local data
+```
+
+**CLI** means command-line interface: type a command. **SPA** means single-page web app: click around in a browser. Both should use the same REST API as any other client.
+
+This is **API-first development**. Define the contract, then build the service and its clients against that contract. No “special magic” hidden in a CLI that other programs cannot use.
+
+### The messages are the glue
+
+OPAL Event uses **ZeroMQ**, a fast way for programs to exchange messages.
+
+```text
+Listen ───┐
+Sensors ──┼──▶ Event broker ──▶ Subscribers / matching rules
+Look* ────┘                           |
+                                    Actions
+                                    HTTP / shell / Python
+
+* Look events are planned, not currently produced by a live Look service.
+```
+
+Event has two sides:
+
+- **REST** for setting up rules, checking history, and publishing controlled events.
+- **ZeroMQ** for sending messages to subscribers with little coupling between programs.
+
+A message may be lost if nobody is listening, or if resources run out. If you need guaranteed delivery for an important workflow, add a durable queue or another system that provides those guarantees. An event receipt is not a promise that the door actually locked or the alert actually arrived.
+
+### Learn these six useful words
+
+| Word | Easy meaning | Example |
+| --- | --- | --- |
+| **Engine** | The software doing the hard work | Piper, Kokoro, Vosk |
+| **Model** | The trained data an engine uses | A speech or vision model |
+| **Profile** | Saved settings for one kind of job | “Quiet room” microphone profile |
+| **Intent** | What a spoken command means | `light_turn_on` |
+| **Event** | A message that something happened | `sensor.temperature.reading` |
+| **Rule** | A condition that may trigger an approved action | “If temperature > 30°C…” |
+
+Three other words are useful when Look arrives: a **source** supplies images (camera or file), a **pipeline** does a series of image-processing steps, and an **observation** is what a model found. A **session** handles ongoing work; a **job** handles work with an end. A **monitor** represents a long-running desired state in the design.
+
+### Deploy the heavy parts where they belong
+
+```text
+Raspberry Pi or small computer             GPU computer (when needed)
++----------------------------+             +--------------------------+
+| Microphone → Listen        |             | Look (future)            |
+| Talk + speaker/player      |◀── LAN ────▶| Think (future)           |
++----------------------------+             | Larger inference engines |
+             |                             +--------------------------+
+             └──────────▶ Event ◀──────────────────────┘
+```
+
+Use a Pi for jobs a Pi does well. Let a larger machine handle expensive image or language models. You can move a service without teaching your applications a new vocabulary.
+
+### The contract is the map
+
+The source of truth for the public interface is the OpenAPI description:
+
+- [Event 1.4.0](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_event.yaml)
+- [Listen 1.4.0 central contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_listen.yaml)
+- [Talk 1.4.0 central contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_talk.yaml)
+- [Look 1.4.0 central contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml)
+
+**Important:** a published contract version is not always the version running inside a service. At this writing, Listen's service-local active YAML reports **1.3.0**, Talk's reports **1.2.0**, and Event's repo identifies its **1.4.0** file as authoritative. Always check the service you have actually started before assuming new contract features work. Look has a central 1.4.0 contract and also a separate [service-repository 1.4.0 design](https://github.com/PatMartin/opal-look/blob/main/opal_look_v1.4.0.yaml); use the central contract for the current suite-level design and reconcile any differences before implementation.
+
+A nice feature of this approach: you can review the promises of a service *before* writing the code.
+
+---
+
+## A closer look at each working service
+
+### Listen: a good listener does not need to be a mind reader
+
+Listen handles wakewords, speech-to-text, intent matching, and named details (slots). It can use local Vosk models, with optional refinement, and offers text, recorded-audio, and live-microphone tests.
+
+```bash
+opal listen system devices
+opal listen profiles list
+opal listen intents phrases light_turn_on
+opal listen test listen-debug
+opal listen failed list
+opal listen perf summary
+```
+
+If Listen gets a sentence wrong, inspect failed utterances and recognition logs. Add examples or aliases, then run regression tests. That is more dependable than hoping it gets smarter on its own.
+
+### Talk: a voice with no strings attached
+
+Talk works with installed Piper and Kokoro engines. It manages voice registrations and saved profiles, and produces WAV or raw PCM. You can ask for a completed file or a progressive stream.
+
+```bash
+opal-talk engines validate piper
+opal-talk voices list
+opal-talk profiles list
+opal-talk generate "Systems online." -o ready.wav
+opal-talk health
+```
+
+Talk does not manage speakers or upload model files through its public API. Your playback process handles sound output; the service host needs any referenced voice files.
+
+### Event: the helpful switchboard operator
+
+Event forwards messages, keeps configurable history, matches rules, and runs registered shell, HTTP, or Python actions. It tracks execution outcomes, including failures and dropped jobs.
+
+```bash
+opal-event topics
+opal-event rules list
+opal-event actions list
+opal-event executions list --status failed
+opal-event health --ready
+```
+
+Rules can be tested without action. Actions should be narrowly scoped. Event is the right place to say, “When this trusted message arrives, request that action,” rather than hard-coding every device interaction into your microphone or camera service.
+
+---
+
+## Make it reliable, not merely clever
+
+### Check before you trust
+
+```bash
+opal-event health --ready
+opal-talk health
+opal listen system doctor
+```
+
+These commands must be run from the appropriate service environments. **Live** means a service answers; **ready** means it can do the work you need. A process can be alive while its model, audio device, or broker is broken.
+
+### Keep changes safe
+
+Use this order when editing rules, voices, profiles, and service settings:
+
+1. Check what is running, and export or back up important settings.
+2. Change one thing at a time.
+3. Validate or dry-run where supported.
+4. Confirm the actual behavior.
+5. Check logs, history, and results; roll back if needed.
+
+OPAL uses revision checking in parts of its API so that two tools do not silently overwrite each other's changes. You may see **ETag** and **If-Match** in the deeper docs. Think of them as “only save this if nobody changed it since I last looked.”
+
+### Follow a problem across services
+
+OPAL's contract design includes session, transaction, request, and causation IDs. They help answer four different questions: Which conversation? Which overall task? Which individual network request? Which earlier event caused this one?
+
+Those IDs are for *tracing*, not for granting permission. Verify actual propagation when joining services with different contract versions.
+
+### Respect the network boundary
+
+Keep development APIs and event sockets on a trusted machine or LAN. Do not expose unauthenticated services directly to the internet. Limit the destinations actions may call, restrict file access, protect secrets, and be careful with cameras and microphones. If a remote vision or LLM provider is enabled, content may leave the local network.
+
+### Tests are part of the product
+
+The projects include Python tests and contract checks. Typical development commands include:
+
+```bash
+# Event
+cd ~/opal-suite/opal-event
 .venv/bin/python -m pytest
-.venv/bin/ruff check src tests
-# SPA (if deps have been installed):
-(cd spa && npx tsc -b)
-```
 
-**Listen**
-
-```bash
-cd ~/src/opal-suite/opal-listen
+# Listen
+cd ~/opal-suite/opal-listen
 .venv/bin/python -m pytest -m 'not vosk' -q
-.venv/bin/python -m pytest -m vosk -q  # requires an installed Vosk model
-# For a uv-managed environment, per repository CI guidance:
-uv sync --locked --extra dev
-uv run ruff check .
-uv run pytest -m 'not vosk' -q
-```
 
-**Talk**
-
-```bash
-cd ~/src/opal-suite/opal-talk
+# Talk
+cd ~/opal-suite/opal-talk
 make test
-make test-fast
-make test-spa
-make lint
-```
 
-**Central API contracts**
-
-```bash
-cd ~/src/opal-suite/opal-api
+# Validate the shared REST contracts (install Node dependencies first).
+cd ~/opal-suite/opal-api
 npm ci
 npm run check
 ```
 
-### Test levels
-
-1. **Static design:** contract parse/lint, schema examples, naming, compatibility and stable operation IDs.
-2. **Unit:** normalizers, slot extraction, VAD decisions, voice option parsing, strict event predicates, template expansion and security validation.
-3. **Mocked integration:** fake speech provider, fake TTS engine, fake Event action backend, fake Look detector and fake Think provider.
-4. **REST conformance:** every operation path/method/ID; request validation; success/error responses; headers; ETags; cursor behavior; binary/streaming behavior.
-5. **CLI/UI parity:** a CLI command and SPA operation for every supported REST operation, with error and rollback paths.
-6. **Real engine integration:** Vosk/Piper/Kokoro with optional host assets; skip clearly when unavailable rather than misreport success.
-7. **Cross-service integration:** real broker topic/wire frames, Listen publication gating, Event action routing, Talk completion/stream playback adapters.
-8. **End-to-end/regression:** reproducible audio golden/negative/noise fixtures, event rules and bounded execution tests, hypothetical vision frame fixtures, agent-tool authorization tests.
-9. **Operational:** restart behavior, crashes, lost sockets, reconnects, queue overflow, backup/restore safety, retention cleanup and disk full.
-10. **Performance:** first-byte latency, memory/VRAM use on intended hardware, sustained streams and multi-client load.
-
-### Suggested suite-wide acceptance tests `[FUTURE]`
-
-- Publish a valid envelope with matching frames, confirm it is observed, and reject/record malformed envelopes correctly.
-- Verify Listen **diagnostic** recognitions never trigger Event actions, even when auto-publication is enabled.
-- Verify a qualified **live** microphone intent produces at most one publication within the deduplication window.
-- Verify Event's topic wildcard semantics differ correctly from ZeroMQ SUB byte-prefix semantics.
-- Saturate the Event execution queue and confirm boundedness, dropped counters and no retries.
-- Generate the same Talk phrase by WAV and raw PCM at a requested sample rate; validate frame count and playback rate.
-- Reject an unsupported TTS engine option rather than silently ignoring it.
-- Simulate a cross-service transaction and confirm request/transaction/causation context is traceable.
-- Run a guarded Think agent against mock tools: force denial, approval request, timeout, rollback and repeated-call loop.
-- Reject a Look snapshot request after its exact source frame has been evicted; never substitute an unrelated frame.
-- Deploy a Pi-sized node with intentional missing GPU dependencies and verify graceful capability degradation.
+The goal is not just “the code runs.” The goal is “the CLI and web app do what the contract promises, errors are clear, and nothing surprises you when something fails.”
 
 ---
 
-## Roadmap and known gaps
+## What's next?
 
-The order below is a **recommended implementation sequence**, not an assertion that features have already shipped.
+The road ahead has two tracks. One makes today's services easier to use together. The other adds capabilities that make OPAL a more complete assistant.
 
-### Highest-priority foundation
+**Build the foundation:** align service implementations with published 1.4.0 contracts; create a real shared `opal` command dispatcher; improve cross-service tracing, examples, deployment, and regression tests.
 
-1. **Resolve suite CLI name collisions.** Create one lightweight root `opal` dispatcher with optional plugin subcommands; preserve standalone scripts. Test wheel installation, multiple environments and shell completion.
-2. **Reconcile central 1.4.0 contracts with each live implementation.** Produce an explicit semantic diff, align runtime tests and decide migration/pinning rather than silently upgrading copies.
-3. **Publish accurate compatibility metadata.** Every service should report implementation version, active contract version, contract SHA and event-wire schema version; release artifacts should pin all of them.
-4. **Finalize a cross-service event catalog.** Clarify canonical topics, payloads, correlation metadata, provenance, deduplication keys and upgrade strategy. The shared event envelope v2 work described by umbrella docs is not yet proved reconciled everywhere.
-5. **Strengthen integration tests.** Include broker slow-joiner, intentional drops, Listen publication toggle, rule safety, ETag races and Talk streaming against real clients.
-6. **Write deployment guidance for remote edge nodes.** Explicit Listen bind policy, access control, CURVE authorization, secrets handling and stable service discovery.
+**Give it sight:** implement Look in small, testable slices: register cameras and models, inspect single images, watch live streams, apply motion and annotation filters, save specific evidence by choice, then publish well-defined events.
 
-### Implement Look in narrow vertical slices
+**Give it judgment:** design and implement Think with model-neutral adapters, bounded tool use, read-only investigation by default, explicit approval before changes, and an audit trail of what happened.
 
-7. **Contract first:** class-only image inference, engine/model/source lifecycle, normalized results, error/health behavior.
-8. **Minimal CLI and SPA parity:** one-shot image, source validation, model discovery and fake-engine tests.
-9. **Continuous sessions:** RTSP/USB sources, resource quotas, SSE results, annotated MJPEG and shared-camera scheduling.
-10. **Evidence management:** exact-frame snapshots, bounded results/media retention, explicit opt-in recording and storage quotas.
-11. **Event integration:** stable namespaced topics; no hardcoded action/automation behavior in the detector.
-
-### Implement Think only once the core boundaries are solid
-
-12. **Authoritative revised Think contract:** providers, models, isolated generation, conversation lifecycle, agent definitions, tool registry, run lifecycle, stream and memory namespace.
-13. **Local provider first:** Ollama/OpenAI-compatible adapter behind a mockable interface and capability reporting, without coupling core schemas to a specific SDK.
-14. **Policy engine before agent autonomy:** registered tools, scope restrictions, authorization checks per call, budget/delegation/loop controls, explicit approval gates.
-15. **Durable, inspectable run traces:** states, tool inputs/results, cancellation, errors, provenance, usage and constrained SSE replay.
-16. **Guarded troubleshooting:** read-only evidence collection, hypothesis revision, dry-run simulation, safety checks, approval, execution, verification and rollback.
-17. **Cross-service composition:** agent consumers of Look and Listen structured results and optional Talk responses, all through documented APIs.
-
-### Longer-term opportunities
-
-- A dashboard showing all OPAL services and their live/ready/degraded states without merging implementations.
-- A node capability catalog and scheduling decisions based on real GPU/CPU/memory availability.
-- Model/voice discovery and resource validation without giving REST clients permission to upload arbitrary executables.
-- Durable delivery as an **optional separate subsystem**, without redefining existing best-effort Event semantics.
-- First-class schema migration tooling, snapshot backup/restore verification, and signed release artifact provenance.
-- Benchmark fixtures for CPU-only Pi deployments and GPU-hosted Look/Think pipelines.
-- Unified permissions and audit records for remote administration and autonomous actions.
-
-### Documentation gaps discovered in the scan
-
-- The umbrella `opal` README describes a v1.3.0 contract archive, yet that repository currently has only four Markdown files. Do not refer to missing local YAML as though it were checked in.
-- The umbrella User Guide includes an obsolete example clone URL (`github.com/opal/opal.git`) rather than the actual owner (`github.com/PatMartin/opal.git`), and implies a bundled suite layout that the current repository does not contain. This README uses the real repository layout.
-- The umbrella text broadly describes a React UI for every service; Listen currently has a static HTML interface, while Talk and Event have React projects.
-- The central `opal-api` files advertise **1.4.0** while local service contracts lag or differ. Some embedded descriptions reference earlier standards and need editorial reconciliation.
-- The Think historical 1.3.0 material is explicitly incomplete/reconstructed; it must be rewritten, tested and reviewed before generating a production agent runtime.
-- The master CLI examples in older umbrella docs can differ from the actual standalone service command trees. The **live CLI references in the service repositories take precedence**.
-- `opal-look` and `opal-think` are currently empty; neither has a deployable service, verified contract implementation or concrete CLI.
-- Listen’s current `service/event_envelope.py` creates fresh transaction and request IDs when constructing an event (while copying the supplied `session_id`). Confirm intended end-to-end transaction/causation propagation in live integration tests before relying on cross-service trace continuity; a shared header convention alone does not guarantee a correct implementation.
+The best future feature is not “AI can do anything.” It is **“AI can help with more things while you can still understand and control it.”**
 
 ---
 
-## Full source documentation and references
+## Where to go deeper
 
-### Umbrella design
+| Want to… | Read this |
+| --- | --- |
+| Learn the whole speech-recognition CLI | [Listen command reference](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md) |
+| Set up microphones and Vosk | [Listen quick start](https://github.com/PatMartin/opal-listen/blob/main/docs/QUICKSTART.md) |
+| Configure voices, profiles, or streaming | [Talk user guide](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) |
+| Build Event rules or actions | [Event command reference](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md) |
+| Understand the Event message protocol | [ZeroMQ protocol](https://github.com/PatMartin/opal-event/blob/main/specs/zeromq_protocol.md) |
+| Study the current Look design | [Look OpenAPI](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml) |
+| Check the official REST contracts | [opal-api](https://github.com/PatMartin/opal-api) |
+| Explore the repositories | [PatMartin on GitHub](https://github.com/PatMartin?tab=repositories) |
 
-- [`opal/why_opal.md`](https://github.com/PatMartin/opal/blob/main/why_opal.md) — original philosophy, five-service design, benefits and status caveats.
-- [`opal/CLI.md`](https://github.com/PatMartin/opal/blob/main/CLI.md) — unified CLI concept, cross-service examples, intended Look/Think command outline.
-- [`opal/USER_GUIDE.md`](https://github.com/PatMartin/opal/blob/main/USER_GUIDE.md) — original suite guide; contains some stale paths/version statements.
-- [`opal/README.md`](https://github.com/PatMartin/opal/blob/main/README.md) — historical v1.3.0 draft-release warning.
+## The short version
 
-### Contracts and shared conventions
+You do not have to build a giant assistant on day one.
 
-- [`opal-api/README.md`](https://github.com/PatMartin/opal-api/blob/main/README.md) — published contract validation workflow.
-- [`opal-api/openapi/opal_event.yaml`](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_event.yaml) — current centrally published Event contract (1.4.0).
-- [`opal-api/openapi/opal_listen.yaml`](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_listen.yaml) — current centrally published Listen contract (1.4.0).
-- [`opal-api/openapi/opal_talk.yaml`](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_talk.yaml) — current centrally published Talk contract (1.4.0).
-- [`opal-api/.spectral.opal.yaml`](https://github.com/PatMartin/opal-api/blob/main/.spectral.opal.yaml) — OPAL-specific lint rules.
+**Start with a voice. Add ears. Wire up one useful event. Test it. Then add eyes and a cautious brain when they are ready.**
 
-### Implemented service references
+OPAL is about owning the pieces, understanding the behavior, and having fun building something that actually helps.
 
-- **Listen:** [`README`](https://github.com/PatMartin/opal-listen/blob/main/README.md) · [`CLI reference`](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md) · [`User Guide`](https://github.com/PatMartin/opal-listen/blob/main/docs/USER_GUIDE.md) · [`Design`](https://github.com/PatMartin/opal-listen/blob/main/docs/design.md) · [`active OpenAPI`](https://github.com/PatMartin/opal-listen/blob/main/opal_listen.yaml).
-- **Talk:** [`README`](https://github.com/PatMartin/opal-talk/blob/main/README.md) · [`CLI reference`](https://github.com/PatMartin/opal-talk/blob/main/docs/CLI.md) · [`User Guide`](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) · [`active OpenAPI`](https://github.com/PatMartin/opal-talk/blob/main/opal_talk.yaml) · [`contract notes`](https://github.com/PatMartin/opal-talk/blob/main/docs/CONTRACT_NOTES.md).
-- **Event:** [`README`](https://github.com/PatMartin/opal-event/blob/main/README.md) · [`CLI reference`](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md) · [`User Guide`](https://github.com/PatMartin/opal-event/blob/main/docs/USER_GUIDE.md) · [`ZeroMQ wire protocol`](https://github.com/PatMartin/opal-event/blob/main/specs/zeromq_protocol.md) · [`example YAML`](https://github.com/PatMartin/opal-event/blob/main/config/opal_event.example.yaml) · [`active OpenAPI`](https://github.com/PatMartin/opal-event/blob/main/opal_event.1.2.0.yaml).
-
-### Future service repositories
-
-- [`opal-look`](https://github.com/PatMartin/opal-look) — empty today; see umbrella CLI/Why OPAL design.
-- [`opal-think`](https://github.com/PatMartin/opal-think) — empty today; use umbrella Think description only as directional input, **not normative specification**.
+**Your hardware. Your models. Your rules. Your AI.**
 
 ---
 
-## Scan provenance (GitHub repository trees)
-
-The repository inventory and checked-in file structures were obtained from the GitHub connection on **2026-10-29**. These are **Git tree object hashes**, not commit IDs or release tags. They make it possible to identify the exact file inventories underlying the review; for runtime reproducibility also pin each repository's commit SHA and lockfile in a deployment manifest.
-
-| Repository | Inspected `main` tree SHA | Notable evidence |
-|---|---|---|
-| `opal` | `c7a0ddb7f34e8045bf2b22453c169fdc29c50413` | Four Markdown files; suite-wide narratives and CLI vision |
-| `opal-api` | `ed366c713d3bf5b8cf628e89c4e869133063022b` | Three `openapi/*.yaml` contracts plus Redocly/Spectral checks |
-| `opal-event` | `187eb4255b3cf10c60fc3798cb70f95bc35221df` | FastAPI code, CLI, React SPA, protocol, tests and 1.2.0 contract |
-| `opal-listen` | `1c30ce674e519facac2c4c49e67fa00fdcff7d97` | FastAPI code, CLI, recognition providers, static UI, fixtures/tests and 1.3.0 contract |
-| `opal-talk` | `3e39a79cf8d61ab8f7e604f587d7353a5b1e9479` | FastAPI code, CLI, React SPA, TTS adapters, tests and 1.2.0 contract |
-| `opal-look` | No committed tree at scan time | Repository exists; reported size 0 |
-| `opal-think` | No committed tree at scan time | Repository exists; reported size 0 |
-
-**Audit scope:** repository tree inventories, central and service-local contract version declarations, top-level READMEs, umbrella design/CLI guides, all three implemented service CLI guides, relevant implementation files and configuration, and Event's authoritative ZeroMQ wire protocol. This was a documentation/architecture scan, **not** an execution of the full test suites or a line-by-line static review of every source file.
-
----
-
-## Design statement
-
-**OPAL should make it possible to start small without painting yourself into a corner.** A single Raspberry Pi can understand a handful of deterministic commands. Add Talk and it can speak. Add Event and it can coordinate applications. Add Look and it can observe a camera without giving the language model raw camera ownership. Add Think and it can reason, plan and act through explicit, auditable permissions. Move expensive engines to a GPU machine without changing the command vocabulary or application API. Replace a provider without rewriting clients. Improve a recognizer with test fixtures. Deploy a rule with a dry-run. Trace failures across service boundaries. And if an agent eventually proposes modifying the system itself, require evidence, simulation, approval and verification.
-
-**The API is the product. The CLI and GUI are first-class clients. The event bus connects capabilities. Safety and observability make autonomy usable.**
-
----
-
-*Generated from direct inspection of `PatMartin/opal`, `opal-api`, `opal-listen`, `opal-talk`, `opal-event`, `opal-look` and `opal-think` on 2026-10-29. Source-read implementation and design distinctions are intentionally explicit. This file is a proposed replacement root README; no repository files were edited or committed by generating it.*
+*This guide describes the repository state checked on November 1, 2026. Status labels matter: a CLI example marked FUTURE DESIGN is an illustration of the planned interface, not a promise of working software. For exact behavior, the current service code and the matching contract take precedence.*
