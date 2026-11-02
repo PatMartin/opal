@@ -12,7 +12,7 @@ Instead of installing one enormous assistant and hoping it does everything, you 
 
 > **Our promise:** Listen. Talk. Look. Think. Act. You stay in charge.
 >
-> **Reality check (November 2026):** Listen, Talk, and Event have Python implementations. Look has a detailed API design but is **not yet a running service**. Think is a planned service. Examples below say **WORKS TODAY**, **NEEDS GLUE**, or **FUTURE DESIGN** so you know what you can actually run.
+> **Reality check (November 2026):** All five services have Python implementations. Look runs a REST API, CLI, browser console, and synthetic vision engine, but real object recognition and camera capture still need adapters. Think runs LLM tasks, sessions, streaming responses, and guarded Event action calls; universal human approval and automatic rollback are not implemented.
 
 [What is OPAL?](#meet-the-five-pieces) · [Try it](#five-minute-tour-of-the-working-pieces) · [Install](#getting-started) · [Adventures](#build-something-fun) · [Command tree](#the-big-command-tree) · [Under the hood](#how-opal-works) · [Roadmap](#whats-next)
 
@@ -40,8 +40,8 @@ OPAL takes another route:
 | 👂 **[Listen](https://github.com/PatMartin/opal-listen)** | Hear words and understand commands | “Computer, turn on the kitchen lights” | **Working** |
 | 🗣️ **[Talk](https://github.com/PatMartin/opal-talk)** | Turn written words into speech audio | “The garage door is still open” | **Working** |
 | ⚡ **[Event](https://github.com/PatMartin/opal-event)** | Pass messages around and run approved actions | When a sensor reports heat, notify someone | **Working** |
-| 👁️ **[Look](https://github.com/PatMartin/opal-look)** | Watch images and video and describe what models find | Spot a person in a camera feed | **API designed; implementation to come** |
-| 🧠 **[Think](https://github.com/PatMartin/opal-think)** | Reason, plan, ask for approval, and use tools | Investigate a failing service without blindly changing it | **Planned** |
+| 👁️ **[Look](https://github.com/PatMartin/opal-look)** | Watch images and video and describe what models find | Spot a person in a camera feed | **Running; synthetic analysis** |
+| 🧠 **[Think](https://github.com/PatMartin/opal-think)** | Reason, track tasks, and invoke registered Event tools | Investigate a failing service without blindly changing it | **Running; bounded tasks** |
 
 Think of Listen as the ears, Talk as the voice, Look as the eyes, Think as the brain, and Event as the nervous system.
 
@@ -70,7 +70,7 @@ You: "Computer, is someone at the front door?"
 Computer: "I can see a person near the porch."
 ```
 
-**This full conversation is a vision, not a working demo today.** Look and Think need implementations, and a playback app must send Talk's generated audio to a speaker. OPAL is honest about the gap between a good design and running code.
+**This full conversation remains an integration goal, not a turnkey demo.** Look needs real inference and camera adapters, and the services need an application to connect them and play Talk's audio. OPAL is honest about the gap between a good design and running code.
 
 ---
 
@@ -152,7 +152,7 @@ You can use these projects separately, or run them on different computers on you
 
 ### What you need
 
-A modern Linux machine, Python 3.11 or newer, Git, and the hardware or model files for the service you want to use. On Ubuntu, this is a reasonable starting point:
+A modern Linux machine, Python 3.11 or newer (3.12+ for Look), Git, and the hardware or model files for the service you want to use. On Ubuntu, this is a reasonable starting point:
 
 ```bash
 sudo apt update
@@ -171,6 +171,8 @@ git clone https://github.com/PatMartin/opal-event.git
 git clone https://github.com/PatMartin/opal-listen.git
 git clone https://github.com/PatMartin/opal-talk.git
 git clone https://github.com/PatMartin/opal-api.git
+git clone https://github.com/PatMartin/opal-look.git
+git clone https://github.com/PatMartin/opal-think.git
 ```
 
 You can also clone [this umbrella repository](https://github.com/PatMartin/opal) for the guide itself. It does not currently install an all-in-one application.
@@ -247,9 +249,43 @@ Check it from another terminal:
 
 See the [Talk guide](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) for engine files, voice setup, and streaming.
 
+### Start Think: the brain
+
+Think requires Python 3.11+ and can use Ollama or an optionally configured external model provider.
+
+```bash
+cd ~/opal-suite/opal-think
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/opal-think-svc --host 127.0.0.1 --port 18100
+```
+
+In another terminal:
+
+```bash
+export OPAL_THINK_API_URL=http://127.0.0.1:18100
+~/opal-suite/opal-think/.venv/bin/opal think health --live
+~/opal-suite/opal-think/.venv/bin/opal think model list
+```
+
+A live server may not yet have a ready model. See the [Think guide](https://github.com/PatMartin/opal-think) for configuring Ollama, sessions, and Event tools.
+
+### Start Look: the eyes (synthetic for now)
+
+Look requires Python 3.12+:
+
+```bash
+cd ~/opal-suite/opal-look
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/opal-look
+```
+
+Look provides a REST API, browser console, and separate `opal-look-cli` Typer client. Its synthetic engine generates test results; it does **not** recognize actual objects. The current source checkout may require `PYTHONPATH="$PWD/src:$PYTHONPATH"` if CLI packaging cannot find `opal_look_cli`. See the [Look guide](https://github.com/PatMartin/opal-look).
+
 ### One little packaging trap
 
-Each working service publishes its own `opal` console command. If you install them in **one Python environment**, one entry point can replace another. There is **not yet a single suite-wide `opal` dispatcher**.
+Services expose separate CLI entry points; some also publish an `opal` console command. If you install them in **one Python environment**, one entry point can replace another. There is **not yet a single suite-wide `opal` dispatcher**.
 
 For now:
 
@@ -403,64 +439,33 @@ Then a spoken phrase can become a light-control request, without sending the phr
 
 **Needs glue:** A real light integration, an approved Event action, and verified event routing. OPAL does not come with a magic “all your lights are now connected” switch.
 
-### Adventure 5: “Who's on my porch?” — FUTURE DESIGN
+### Adventure 5: Give OPAL something to look at — WORKS TODAY (SYNTHETIC)
 
-This is where Look gets exciting. The [current central Look 1.4.0 contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml) describes camera sources, processing pipelines, raw and annotated video, motion filters, live sessions, finite jobs, observations, snapshots, captures, rules, and monitors.
-
-The **intended** CLI is generated from that contract, with names such as `sources`, `pipelines`, `sessions`, and `monitors`. This is a **design sketch, not runnable code**:
+Look is now a running FastAPI service with a browser console and Typer REST client. Upload JPEG or PNG media, configure analysis profiles, inspect stored results, capture snapshots, and manage media-backed sessions.
 
 ```bash
-# FUTURE DESIGN — commands/options must match the implemented Look CLI.
-opal look sources list
-opal look sources show front_door
-opal look sources probe front_door
-
-# A processing pipeline could detect objects and add annotations.
-opal look pipelines list
-opal look pipelines show porch_detection
-
-# A live session would produce ongoing observations.
-opal look sessions list
-opal look observations list
+cd ~/opal-suite/opal-look
+.venv/bin/opal-look
 ```
 
-The design also supports a simple viewer: show a camera feed, optionally apply a motion filter, and turn annotations on or off. The REST contract already includes a direct camera stream endpoint:
+The synthetic engine produces deterministic, structured test results. **It cannot actually identify someone on your porch.** Real model inference, RTSP capture, and video decoding still need adapters. The broader [Look contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml) describes additional capabilities that are not necessarily implemented.
 
-```http
-GET /api/v1/sources/{source_id}/stream
+### Adventure 6: Give your assistant a cautious brain — WORKS TODAY (WITH LIMITS)
+
+Think runs real model-backed tasks, maintains sessions, and streams answers. Once you configure an Ollama model:
+
+```bash
+export OPAL_THINK_API_URL=http://127.0.0.1:18100
+opal think model list
+opal think ask "Explain why an NVIDIA driver might stop working." --model 'ollama:llama3.2:latest'
+opal think task create "Draft read-only GPU diagnostic steps." --detach
+opal think task list
+opal think task watch YOUR_TASK_ID
 ```
 
-That is a **specification**, not a claim that an OPAL Look server is available today.
+Use a model ID actually returned by `model list`. Think can request enabled, registered OPAL Event actions, but does not execute arbitrary model-generated commands directly.
 
-A future end-to-end adventure could look like this: camera sees person → Look generates an observation → Event routes a message → Think decides what to say → Talk generates “Someone's at the door.” Nothing in the design needs the camera to be owned by a language model.
-
-### Adventure 6: Give your assistant a cautious brain — FUTURE DESIGN
-
-Someday you might ask:
-
-> “OPAL, my graphics driver stopped working. Figure out why, but do not change anything without asking.”
-
-The planned Think service should follow a clear, inspectable process:
-
-```text
-Observe the problem
-     ↓
-Collect evidence
-     ↓
-Suggest likely causes
-     ↓
-Test or simulate possible fixes
-     ↓
-Explain risks and ask permission
-     ↓
-Make the approved change
-     ↓
-Check whether it worked
-     ↓
-Revert or revise if needed
-```
-
-That is **guarded autonomy**: useful AI that can investigate freely within read-only bounds, but cannot turn a guess into an unauthorized system change. There is no runnable Think CLI yet.
+**Safety limit:** Enabled mutating Event actions can currently be requested without a separate human approval step. Use read-only Event actions for a read-only agent. A full observe → diagnose → simulate → approve → execute → verify → rollback workflow remains future work.
 
 ---
 
@@ -512,47 +517,32 @@ opal
 │   ├── backup       export | validate | import
 │   └── health
 │
-├── look                                        DESIGNED — NOT RUNNABLE
-│   ├── capabilities
-│   ├── engines      list | show | add | update | remove
-│   ├── models       list | show | add | update | remove
-│   ├── sources      list | show | add | update | remove | probe | stream
-│   ├── pipelines    list | show | add | update | remove | validate
-│   ├── profiles     list | show | add | update | remove | activate
-│   ├── analyze      image | source
-│   ├── sessions     list | show | start | stop | stream | preview
-│   ├── jobs         list | show | start | cancel
-│   ├── observations list | show
-│   ├── media        list | show | upload | remove
-│   ├── captures     list | show | capture | download
-│   ├── artifacts    list | show | download
-│   ├── zones        list | show | add | update | remove
-│   ├── rules        list | show | add | update | remove
-│   ├── monitors     list | show | add | update | remove
-│   ├── recordings   list | show | start | stop
-│   ├── settings     get | set | reset
-│   └── health
+├── look                                        RUNNING (separate opal-look CLI)
+│   ├── engines / models / profiles             discovery and configuration
+│   ├── media / analysis                        uploads and synthetic analysis
+│   ├── results / snapshots                    stored results and images
+│   ├── sessions                                media-backed analysis
+│   └── real inference / RTSP / video decoding  FUTURE ADAPTERS
 │
-└── think                                       FUTURE — SUBJECT TO DESIGN
-    ├── providers    list | show | configure
-    ├── models       list | show
-    ├── generate     text | stream
-    ├── sessions     start | show | list | close
-    ├── agents       list | show | add | update
-    ├── tools        list | show | test
-    ├── runs         start | show | watch | cancel
-    ├── approvals    list | show | approve | reject
-    ├── memory       search | list
-    └── health
+└── think                                       WORKING (opal think / opal-think)
+    ├── health                                  --live | --ready
+    ├── ask PROMPT                              --model | --session-id
+    ├── chat                                    --model | --session-id
+    ├── task        create | list | show | watch | cancel
+    ├── session     add | list | show | remove
+    ├── model       list | show
+    └── settings    list | show | set | remove
 ```
 
-The Look tree above is a **human-friendly overview** of the central contract's resources, not a checked generated command inventory. Think verbs are **illustrative only**.
+Look's branch summarizes implemented resource areas rather than exact CLI commands; consult its separate `opal-look-cli` guide. Think's branch reflects its implemented Typer commands. There is no unified suite-wide CLI dispatcher yet.
 
 For exact commands, use the living references:
 
 - [Listen CLI](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md)
 - [Talk CLI](https://github.com/PatMartin/opal-talk/blob/main/docs/CLI.md)
 - [Event CLI](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md)
+- [Look guide](https://github.com/PatMartin/opal-look)
+- [Think guide](https://github.com/PatMartin/opal-think)
 - [Central OpenAPI contracts](https://github.com/PatMartin/opal-api/tree/main/openapi)
 
 ---
@@ -687,6 +677,16 @@ Rules can be tested without action. Actions should be narrowly scoped. Event is 
 
 ---
 
+### Look: eyes with a test pattern for now
+
+Look manages media, analysis profiles, stored results, and snapshots. Synthetic analysis is useful for integration testing but cannot recognize actual objects. Real inference and camera adapters are next.
+
+### Think: a brain with bounded tools
+
+Think runs Ollama or configured external models through tasks, sessions, and streamed answers. It can request enabled Event actions, but does not yet provide universal human approval or automatic rollback. Start with read-only actions.
+
+---
+
 ## Make it reliable, not merely clever
 
 ### Check before you trust
@@ -738,6 +738,13 @@ cd ~/opal-suite/opal-listen
 cd ~/opal-suite/opal-talk
 make test
 
+# Look and Think
+cd ~/opal-suite/opal-look
+.venv/bin/python -m pytest
+
+cd ~/opal-suite/opal-think
+.venv/bin/python -m pytest
+
 # Validate the shared REST contracts (install Node dependencies first).
 cd ~/opal-suite/opal-api
 npm ci
@@ -750,13 +757,15 @@ The goal is not just “the code runs.” The goal is “the CLI and web app do 
 
 ## What's next?
 
-The road ahead has two tracks. One makes today's services easier to use together. The other adds capabilities that make OPAL a more complete assistant.
+All five services now have implementations. The next challenge is connecting them reliably without pretending every adapter or safeguard is finished.
 
-**Build the foundation:** align service implementations with published 1.4.0 contracts; create a real shared `opal` command dispatcher; improve cross-service tracing, examples, deployment, and regression tests.
+**Finish the eyes:** add real vision inference, camera/RTSP capture, and video decoding to Look.
 
-**Give it sight:** implement Look in small, testable slices: register cameras and models, inspect single images, watch live streams, apply motion and annotation filters, save specific evidence by choice, then publish well-defined events.
+**Make the brain safer:** extend Think's bounded Event tool path with evidence gathering, simulation, risk review, explicit human approval, verification, and rollback.
 
-**Give it judgment:** design and implement Think with model-neutral adapters, bounded tool use, read-only investigation by default, explicit approval before changes, and an audit trail of what happened.
+**Connect the family:** build runnable Listen → Think → Event → Look → Talk examples, improve shared installation and CLI discovery, and verify cross-service tracing.
+
+**Keep promises testable:** align implementations with the published contracts and expand regression tests, evalsets, and conformance checks.
 
 The best future feature is not “AI can do anything.” It is **“AI can help with more things while you can still understand and control it.”**
 
@@ -771,7 +780,8 @@ The best future feature is not “AI can do anything.” It is **“AI can help 
 | Configure voices, profiles, or streaming | [Talk user guide](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) |
 | Build Event rules or actions | [Event command reference](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md) |
 | Understand the Event message protocol | [ZeroMQ protocol](https://github.com/PatMartin/opal-event/blob/main/specs/zeromq_protocol.md) |
-| Study the current Look design | [Look OpenAPI](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml) |
+| Run Look and explore synthetic analysis | [Look guide](https://github.com/PatMartin/opal-look) |
+| Configure Think models, tasks, and tools | [Think guide](https://github.com/PatMartin/opal-think) |
 | Check the official REST contracts | [opal-api](https://github.com/PatMartin/opal-api) |
 | Explore the repositories | [PatMartin on GitHub](https://github.com/PatMartin?tab=repositories) |
 
@@ -779,7 +789,7 @@ The best future feature is not “AI can do anything.” It is **“AI can help 
 
 You do not have to build a giant assistant on day one.
 
-**Start with a voice. Add ears. Wire up one useful event. Test it. Then add eyes and a cautious brain when they are ready.**
+**Start with a voice. Add ears. Wire up one useful event. Test it. Then try synthetic sight and a bounded AI task. Add real-world adapters carefully.**
 
 OPAL is about owning the pieces, understanding the behavior, and having fun building something that actually helps.
 
@@ -787,4 +797,4 @@ OPAL is about owning the pieces, understanding the behavior, and having fun buil
 
 ---
 
-*This guide describes the repository state checked on November 1, 2026. Status labels matter: a CLI example marked FUTURE DESIGN is an illustration of the planned interface, not a promise of working software. For exact behavior, the current service code and the matching contract take precedence.*
+*Updated November 2, 2026. A synthetic result is not real recognition, and a planned approval gate is not an implemented safeguard. For exact behavior, the current service code and matching contract take precedence.*
