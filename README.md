@@ -1,800 +1,189 @@
-# OPAL — Give Your AI Ears, Eyes, a Voice, and a Brain
+# OPAL
 
 ![OPAL](opal.png)
 
-**Build an AI assistant that lives on your hardware, uses tools you choose, and grows one useful skill at a time.**
+**Build local-first AI tools that can hear, speak, see, reason, and act.** Start with one service. Add another when you need it. A Raspberry Pi can handle voice commands while a separate computer runs the language model.
 
-Imagine telling your computer, “Turn on the kitchen lights,” and watching it happen. Or getting a spoken alert when a camera spots a visitor. Or asking an AI to investigate a computer problem, show the evidence, and request permission *before* changing anything.
+[Setup](#setup) · [Listen](#listen-test-a-voice-command) · [Say](#say-make-a-wav-file) · [Look](#look-test-a-vision-pipeline) · [Event](#event-turn-a-message-into-an-action) · [Think](#think-ask-a-model-and-track-its-work) · [Combine services](#combine-services)
 
-That is the idea behind **OPAL**: **Open, modular, local-first AI**.
-
-Instead of installing one enormous assistant and hoping it does everything, you choose the parts you need. Like building with LEGO, except some of the bricks talk, some watch cameras, and one might eventually explain why your printer hates you.
-
-> **Our promise:** Listen. Talk. Look. Think. Act. You stay in charge.
->
-> **Reality check (November 2026):** All five services have Python implementations. Look runs a REST API, CLI, browser console, and synthetic vision engine, but real object recognition and camera capture still need adapters. Think runs LLM tasks, sessions, streaming responses, and guarded Event action calls; universal human approval and automatic rollback are not implemented.
-
-[What is OPAL?](#meet-the-five-pieces) · [Try it](#five-minute-tour-of-the-working-pieces) · [Install](#getting-started) · [Adventures](#build-something-fun) · [Command tree](#the-big-command-tree) · [Under the hood](#how-opal-works) · [Roadmap](#whats-next)
-
----
-
-## The big idea, without the jargon
-
-Most AI assistants arrive as one big package. You get the tools, models, and rules their maker picked.
-
-OPAL takes another route:
-
-- **Pick your hardware.** A Raspberry Pi can listen in one room while a GPU-equipped computer handles the heavy thinking.
-- **Pick your engines.** Use Vosk for speech recognition and Piper or Kokoro for speech. Switch engines without rewriting every app.
-- **Keep things local.** Your microphone and camera do not have to send everything to a cloud provider.
-- **Start small.** A voice command does not need a giant language model if a simple rule will do.
-- **See what happened.** Inspect events, test rules, review failures, and trace operations.
-- **Keep control.** A future AI agent should ask before making risky changes. A clever guess is not permission.
-
-**One important term: API.** An API is a way one program asks another program to do something. OPAL uses **REST**, a common web API style. That means your terminal, web app, Python script, and future AI agent can all ask a service to do the same job.
-
-## Meet the five pieces
-
-| Piece | Plain-English job | Example | Status |
-| --- | --- | --- | --- |
-| 👂 **[Listen](https://github.com/PatMartin/opal-listen)** | Hear words and understand commands | “Computer, turn on the kitchen lights” | **Working** |
-| 🗣️ **[Talk](https://github.com/PatMartin/opal-talk)** | Turn written words into speech audio | “The garage door is still open” | **Working** |
-| ⚡ **[Event](https://github.com/PatMartin/opal-event)** | Pass messages around and run approved actions | When a sensor reports heat, notify someone | **Working** |
-| 👁️ **[Look](https://github.com/PatMartin/opal-look)** | Watch images and video and describe what models find | Spot a person in a camera feed | **Running; synthetic analysis** |
-| 🧠 **[Think](https://github.com/PatMartin/opal-think)** | Reason, track tasks, and invoke registered Event tools | Investigate a failing service without blindly changing it | **Running; bounded tasks** |
-
-Think of Listen as the ears, Talk as the voice, Look as the eyes, Think as the brain, and Event as the nervous system.
-
-You do **not** need all five. A Pi that hears simple commands and triggers events is already useful.
-
-### What could the whole system do?
-
-```text
-You: "Computer, is someone at the front door?"
-                  |
-             OPAL Listen
-             understands you
-                  |
-             OPAL Think
-             decides what to ask
-                  |
-             OPAL Look
-             checks the camera
-                  |
-             OPAL Event
-             can notify other apps
-                  |
-             OPAL Talk
-             creates a spoken reply
-                  |
-Computer: "I can see a person near the porch."
-```
-
-**This full conversation remains an integration goal, not a turnkey demo.** Look needs real inference and camera adapters, and the services need an application to connect them and play Talk's audio. OPAL is honest about the gap between a good design and running code.
-
----
-
-## Five-minute tour of the working pieces
-
-Already running one of the services? These are real CLI patterns from the service documentation. **Each service has its own command-line installation today**; see [Getting started](#getting-started) before you try the combined-looking examples.
-
-### 1. Make your computer say something — WORKS TODAY
-
-```bash
-# See which voices are registered.
-opal-talk voices list
-
-# Generate spoken audio with your active voice.
-opal-talk generate "Greetings, human. The machines are being polite today." -o greeting.wav
-
-# Play it on a Linux computer with an audio player.
-ffplay -autoexit -nodisp greeting.wav
-```
-
-Talk makes the audio file. **Your player** makes the sound. This separation is useful: the service can run on a server while a different device handles the speaker.
-
-Want a particular voice?
-
-```bash
-opal-talk engines list
-opal-talk voices list --engine kokoro
-opal-talk voices test kokoro-af-heart -o audition.wav
-```
-
-The voice ID must be registered, the model files must be installed, and the engine must be available. Voice IDs above are examples, not a promise that they are preinstalled.
-
-### 2. Teach your assistant a phrase — WORKS TODAY
-
-```bash
-# Run these using Listen's own virtual environment.
-opal listen system doctor
-opal listen wakewords list
-opal listen intents list
-
-# Try a phrase without turning on any real device.
-opal listen test text "computer, turn on the kitchen light"
-```
-
-A recognition result can contain something like:
-
-```json
-{
-  "wakeword": "computer",
-  "intent_name": "light_turn_on",
-  "slot_values": {"room_name": "kitchen"}
-}
-```
-
-An **intent** is what you want to do. A **slot** is a detail, such as which room. This makes a small local speech recognizer surprisingly capable.
-
-**Good to know:** A text test checks understanding; it does **not** turn on a real light or publish a live command.
-
-### 3. Send a message through the system — WORKS TODAY
-
-```bash
-opal-event health
-
-opal-event publish sensor.temperature.reading \
-  --data-json '{"room":"workshop","celsius":31.5}'
-
-opal-event list --topic sensor.temperature.reading --limit 10
-```
-
-A **topic** is the label on a message. Here, `sensor.temperature.reading` tells listeners what kind of message it is.
-
-The publish command reports when Event accepts the message. It does **not** prove every subscriber saw it. OPAL's event bus is **best effort**, not a guaranteed-delivery system.
-
----
-
-## Getting started
-
-You can use these projects separately, or run them on different computers on your network.
-
-### What you need
-
-A modern Linux machine, Python 3.11 or newer (3.12+ for Look), Git, and the hardware or model files for the service you want to use. On Ubuntu, this is a reasonable starting point:
-
-```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv python3-dev \
-  build-essential libasound2-dev portaudio19-dev \
-  libzmq3-dev ffmpeg sox
-```
-
-**Put the projects side by side:**
-
-```bash
-mkdir -p ~/opal-suite
-cd ~/opal-suite
-
-git clone https://github.com/PatMartin/opal-event.git
-git clone https://github.com/PatMartin/opal-listen.git
-git clone https://github.com/PatMartin/opal-talk.git
-git clone https://github.com/PatMartin/opal-api.git
-git clone https://github.com/PatMartin/opal-look.git
-git clone https://github.com/PatMartin/opal-think.git
-```
-
-You can also clone [this umbrella repository](https://github.com/PatMartin/opal) for the guide itself. It does not currently install an all-in-one application.
-
-### Start Event: the message switchboard
-
-In terminal 1:
-
-```bash
-cd ~/opal-suite/opal-event
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-
-cp config/opal_event.example.yaml config/opal_event.yaml
-mkdir -p var
-
-.venv/bin/opal-event-svc --config config/opal_event.yaml --log-level info
-```
-
-In terminal 2:
-
-```bash
-~/opal-suite/opal-event/.venv/bin/opal-event health
-~/opal-suite/opal-event/.venv/bin/opal-event topics
-```
-
-### Start Listen: the ears
-
-In a separate terminal:
-
-```bash
-cd ~/opal-suite/opal-listen
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-
-# Download a compatible Vosk model separately.
-# Replace this path with the real extracted model directory.
-export OPAL_LISTENER_VOSK_MODEL_PATH=/absolute/path/to/vosk-model-small-en-us-0.15
-
-.venv/bin/python -m opal_listener
-```
-
-Check it from another terminal:
-
-```bash
-~/opal-suite/opal-listen/.venv/bin/opal listen system doctor
-~/opal-suite/opal-listen/.venv/bin/opal listen test text \
-  "computer, turn on the kitchen light"
-```
-
-For microphones, models, Docker, and sound-device setup, use the [Listen quick start](https://github.com/PatMartin/opal-listen/blob/main/docs/QUICKSTART.md).
-
-### Start Talk: the voice
-
-In a separate terminal:
-
-```bash
-cd ~/opal-suite/opal-talk
-python3 -m venv .venv
-.venv/bin/pip install -e '.[engines,dev]'
-
-# Install Piper and/or Kokoro voice model files separately.
-# Then configure the correct paths in config/service.yaml.
-.venv/bin/opal-talk-svc
-```
-
-Check it from another terminal:
-
-```bash
-~/opal-suite/opal-talk/.venv/bin/opal-talk health
-~/opal-suite/opal-talk/.venv/bin/opal-talk engines list
-~/opal-suite/opal-talk/.venv/bin/opal-talk voices list
-```
-
-See the [Talk guide](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) for engine files, voice setup, and streaming.
-
-### Start Think: the brain
-
-Think requires Python 3.11+ and can use Ollama or an optionally configured external model provider.
-
-```bash
-cd ~/opal-suite/opal-think
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/opal-think-svc --host 127.0.0.1 --port 18100
-```
-
-In another terminal:
-
-```bash
-export OPAL_THINK_API_URL=http://127.0.0.1:18100
-~/opal-suite/opal-think/.venv/bin/opal think health --live
-~/opal-suite/opal-think/.venv/bin/opal think model list
-```
-
-A live server may not yet have a ready model. See the [Think guide](https://github.com/PatMartin/opal-think) for configuring Ollama, sessions, and Event tools.
-
-### Start Look: the eyes (synthetic for now)
-
-Look requires Python 3.12+:
-
-```bash
-cd ~/opal-suite/opal-look
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/opal-look
-```
-
-Look provides a REST API, browser console, and separate `opal-look-cli` Typer client. Its synthetic engine generates test results; it does **not** recognize actual objects. The current source checkout may require `PYTHONPATH="$PWD/src:$PYTHONPATH"` if CLI packaging cannot find `opal_look_cli`. See the [Look guide](https://github.com/PatMartin/opal-look).
-
-### One little packaging trap
-
-Services expose separate CLI entry points; some also publish an `opal` console command. If you install them in **one Python environment**, one entry point can replace another. There is **not yet a single suite-wide `opal` dispatcher**.
-
-For now:
-
-- Use separate virtual environments, as shown above.
-- Use `opal-event` for Event and `opal-talk` for Talk.
-- Use Listen's environment-specific `opal listen ...`.
-- When this guide shows `opal event ...` or `opal talk ...`, those are the native forms documented by their respective service CLIs, **not** proof that one globally installed command supports all services.
-
-In other words: the command *language* is shared; the installation experience is still catching up.
-
----
-
-## Build something fun
-
-The best way to learn OPAL is to give it a mission.
-
-### Adventure 1: Give your Raspberry Pi a secret phrase — WORKS TODAY
-
-Give Listen a new wakeword and practice recognizing commands.
-
-```bash
-opal listen wakewords add "hey opal" --threshold 0.85
-opal listen wakewords list
-
-opal listen test text "computer, turn on the kitchen light"
-
-# Live microphone testing (Ctrl-C to stop).
-opal listen test listen-debug
-```
-
-You can build your own vocabulary too:
-
-```bash
-# Add a place to a room-name slot if that slot already exists.
-opal listen slots add-value room_name garage
-
-# Expand an existing intent with a natural way to say the same thing.
-opal listen intents add-phrase light_turn_on \
-  'switch on [the] {room_name} (light | lights)'
-
-# Check the result before hooking anything up.
-opal listen test text "switch on the garage lights" \
-  --expect-intent light_turn_on
-```
-
-The square brackets mean “optional words.” Parentheses offer alternatives. The braces hold a slot. It is like teaching a tiny robot grammar instead of asking a giant LLM to understand everything.
-
-**What you need:** A suitable model and microphone for live listening; the sample seeded intents and slots may differ if you have changed your configuration.
-
-### Adventure 2: Build a talking announcement machine — WORKS TODAY
-
-Want a funny welcome, a timer announcement, or an audio story generator?
-
-```bash
-opal-talk generate \
-  "Attention everyone. The kitchen has been declared a cookie-friendly zone." \
-  -o announcement.wav
-
-ffplay -autoexit -nodisp announcement.wav
-```
-
-Need to speak while the rest of the sentence is still being generated? Stream raw audio to a speaker:
-
-```bash
-opal-talk generate \
-  "This sentence can begin playing before it is fully generated." \
-  --stream --sample-rate 22050 -o - \
-  | aplay -t raw -f S16_LE -c 1 -r 22050
-```
-
-The sample rate on both sides must match. On a server without speakers, send the audio to a separate playback process or device.
-
-### Adventure 3: Make your first event rule — WORKS TODAY
-
-Pretend your workshop is getting too warm. We will create a rule but leave it **disabled**. The test will check logic without executing any action.
-
-First create an event action that only prints a message:
-
-```bash
-opal-event actions create --json '{
-  "id": "announce_hot_workshop",
-  "type": "shell",
-  "enabled": true,
-  "mode": "exec",
-  "executable": "/bin/echo",
-  "args": ["Workshop temperature is {{data.celsius}} C"],
-  "stdin": "none",
-  "timeout_seconds": 10
-}'
-```
-
-Now create the rule:
-
-```bash
-opal-event rules create --json '{
-  "id": "hot_workshop",
-  "enabled": false,
-  "topic": "sensor.temperature.reading",
-  "conditions": [
-    {"path": "data.room", "operator": "eq", "value": "workshop"},
-    {"path": "data.celsius", "operator": "gt", "value": 30}
-  ],
-  "actions": ["announce_hot_workshop"]
-}'
-```
-
-Dry-run the rule:
-
-```bash
-opal-event rules test hot_workshop --event-json '{
-  "topic": "sensor.temperature.reading",
-  "data": {"room": "workshop", "celsius": 31.5}
-}'
-```
-
-If the checks match, the result should show `matched: true`. **Nothing is executed by a rule test.** You can inspect the action and decide whether to enable the rule later.
-
-To test a specific registered action yourself (this **does execute** it):
-
-```bash
-opal-event actions execute announce_hot_workshop --event-json '{
-  "topic": "sensor.temperature.reading",
-  "data": {"celsius": 31.5}
-}'
-
-opal-event executions list
-```
-
-Notice the pattern: **create → inspect → test → allow action → inspect outcome**. That is a good habit for automations, and an essential habit for future AI agents.
-
-### Adventure 4: Turn “computer, lights on” into a real automation — NEEDS GLUE
-
-The pieces already exist:
-
-```bash
-# Confirm Listen understands the phrase.
-opal listen test text \
-  "computer, turn on the kitchen light" \
-  --expect-intent light_turn_on
-
-# Test Event separately with a synthetic intent message.
-opal-event publish opal.listen.intent.match --data-json '{
-  "intent_name": "light_turn_on",
-  "slot_values": {"room_name": "kitchen"}
-}'
-```
-
-For the actual automation, connect Listen's *live* recognition events to Event, register a trusted device-control action, and create a rule matching the real event payload. Live publication is configurable; diagnostic speech tests do **not** automatically publish an actionable intent.
-
-Then a spoken phrase can become a light-control request, without sending the phrase to an LLM.
-
-**Needs glue:** A real light integration, an approved Event action, and verified event routing. OPAL does not come with a magic “all your lights are now connected” switch.
-
-### Adventure 5: Give OPAL something to look at — WORKS TODAY (SYNTHETIC)
-
-Look is now a running FastAPI service with a browser console and Typer REST client. Upload JPEG or PNG media, configure analysis profiles, inspect stored results, capture snapshots, and manage media-backed sessions.
-
-```bash
-cd ~/opal-suite/opal-look
-.venv/bin/opal-look
-```
-
-The synthetic engine produces deterministic, structured test results. **It cannot actually identify someone on your porch.** Real model inference, RTSP capture, and video decoding still need adapters. The broader [Look contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml) describes additional capabilities that are not necessarily implemented.
-
-### Adventure 6: Give your assistant a cautious brain — WORKS TODAY (WITH LIMITS)
-
-Think runs real model-backed tasks, maintains sessions, and streams answers. Once you configure an Ollama model:
-
-```bash
-export OPAL_THINK_API_URL=http://127.0.0.1:18100
-opal think model list
-opal think ask "Explain why an NVIDIA driver might stop working." --model 'ollama:llama3.2:latest'
-opal think task create "Draft read-only GPU diagnostic steps." --detach
-opal think task list
-opal think task watch YOUR_TASK_ID
-```
-
-Use a model ID actually returned by `model list`. Think can request enabled, registered OPAL Event actions, but does not execute arbitrary model-generated commands directly.
-
-**Safety limit:** Enabled mutating Event actions can currently be requested without a separate human approval step. Use read-only Event actions for a read-only agent. A full observe → diagnose → simulate → approve → execute → verify → rollback workflow remains future work.
-
----
-
-## The big command tree
-
-Here is the OPAL command language in one picture. The **working** sections reflect the current service CLI guides. The **planned** sections are the intended surface, not executable software. This is a learning map; see the linked per-service command references for every option.
-
-```text
-opal
-├── listen                                      WORKING (in Listen's CLI)
-│   ├── wakewords    list | get | add | update | remove
-│   ├── intents      list | get | add | update | remove
-│   │                phrases | add-phrase | remove-phrase
-│   ├── slots        list | get | add | update | remove
-│   │                values | add-value | remove-value
-│   │                aliases | add-alias | remove-alias
-│   ├── profiles     list | get | add | update | activate | remove
-│   ├── settings     list | set
-│   ├── test         text | audio | listen | listen-debug | regression
-│   ├── pipeline     start | stop | status
-│   ├── failed       list | get | add | update | remove | promote
-│   ├── regression   list | get | add | update | remove
-│   ├── logs         list | get | count
-│   ├── perf         last | summary | history
-│   ├── config       validate | backup | backups | restore | export | import
-│   ├── system       doctor | devices | live | ready | info | ping
-│   └── event        publish
-│
-├── talk                                        WORKING (or opal-talk)
-│   ├── engines      list | get | update | validate
-│   ├── voices       list | get | add | update | remove | validate | test
-│   ├── profiles     list | get | add | update | remove | activate
-│   ├── generate     TEXT -o FILE [--stream]
-│   ├── settings     list | get | set | delete
-│   ├── backup       list | create | download | restore | delete
-│   │                export | import | validate
-│   ├── health
-│   ├── info
-│   └── ping
-│
-├── event                                       WORKING (or opal-event)
-│   ├── publish      TOPIC --data-json JSON
-│   ├── list | get | delete | clear
-│   ├── topics
-│   ├── rules        list | get | create | update | delete | test
-│   ├── actions      list | get | create | update | delete | execute
-│   ├── executions   list | get
-│   ├── settings     get | update
-│   ├── backup       export | validate | import
-│   └── health
-│
-├── look                                        RUNNING (separate opal-look CLI)
-│   ├── engines / models / profiles             discovery and configuration
-│   ├── media / analysis                        uploads and synthetic analysis
-│   ├── results / snapshots                    stored results and images
-│   ├── sessions                                media-backed analysis
-│   └── real inference / RTSP / video decoding  FUTURE ADAPTERS
-│
-└── think                                       WORKING (opal think / opal-think)
-    ├── health                                  --live | --ready
-    ├── ask PROMPT                              --model | --session-id
-    ├── chat                                    --model | --session-id
-    ├── task        create | list | show | watch | cancel
-    ├── session     add | list | show | remove
-    ├── model       list | show
-    └── settings    list | show | set | remove
-```
-
-Look's branch summarizes implemented resource areas rather than exact CLI commands; consult its separate `opal-look-cli` guide. Think's branch reflects its implemented Typer commands. There is no unified suite-wide CLI dispatcher yet.
-
-For exact commands, use the living references:
-
-- [Listen CLI](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md)
-- [Talk CLI](https://github.com/PatMartin/opal-talk/blob/main/docs/CLI.md)
-- [Event CLI](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md)
-- [Look guide](https://github.com/PatMartin/opal-look)
-- [Think guide](https://github.com/PatMartin/opal-think)
-- [Central OpenAPI contracts](https://github.com/PatMartin/opal-api/tree/main/openapi)
-
----
-
-## How OPAL works
-
-### Every service has three doors
-
-```text
-        Your terminal               Browser UI               Your app
-           (CLI)                       (SPA)                  (script)
-             \                           |                       /
-              \                          |                      /
-               +------------------- REST API ------------------+
-                                      |
-                               OPAL service
-                                      |
-                           engines, models, local data
-```
-
-**CLI** means command-line interface: type a command. **SPA** means single-page web app: click around in a browser. Both should use the same REST API as any other client.
-
-This is **API-first development**. Define the contract, then build the service and its clients against that contract. No “special magic” hidden in a CLI that other programs cannot use.
-
-### The messages are the glue
-
-OPAL Event uses **ZeroMQ**, a fast way for programs to exchange messages.
-
-```text
-Listen ───┐
-Sensors ──┼──▶ Event broker ──▶ Subscribers / matching rules
-Look* ────┘                           |
-                                    Actions
-                                    HTTP / shell / Python
-
-* Look events are planned, not currently produced by a live Look service.
-```
-
-Event has two sides:
-
-- **REST** for setting up rules, checking history, and publishing controlled events.
-- **ZeroMQ** for sending messages to subscribers with little coupling between programs.
-
-A message may be lost if nobody is listening, or if resources run out. If you need guaranteed delivery for an important workflow, add a durable queue or another system that provides those guarantees. An event receipt is not a promise that the door actually locked or the alert actually arrived.
-
-### Learn these six useful words
-
-| Word | Easy meaning | Example |
-| --- | --- | --- |
-| **Engine** | The software doing the hard work | Piper, Kokoro, Vosk |
-| **Model** | The trained data an engine uses | A speech or vision model |
-| **Profile** | Saved settings for one kind of job | “Quiet room” microphone profile |
-| **Intent** | What a spoken command means | `light_turn_on` |
-| **Event** | A message that something happened | `sensor.temperature.reading` |
-| **Rule** | A condition that may trigger an approved action | “If temperature > 30°C…” |
-
-Three other words are useful when Look arrives: a **source** supplies images (camera or file), a **pipeline** does a series of image-processing steps, and an **observation** is what a model found. A **session** handles ongoing work; a **job** handles work with an end. A **monitor** represents a long-running desired state in the design.
-
-### Deploy the heavy parts where they belong
-
-```text
-Raspberry Pi or small computer             GPU computer (when needed)
-+----------------------------+             +--------------------------+
-| Microphone → Listen        |             | Look (future)            |
-| Talk + speaker/player      |◀── LAN ────▶| Think (future)           |
-+----------------------------+             | Larger inference engines |
-             |                             +--------------------------+
-             └──────────▶ Event ◀──────────────────────┘
-```
-
-Use a Pi for jobs a Pi does well. Let a larger machine handle expensive image or language models. You can move a service without teaching your applications a new vocabulary.
-
-### The contract is the map
-
-The source of truth for the public interface is the OpenAPI description:
-
-- [Event 1.4.0](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_event.yaml)
-- [Listen 1.4.0 central contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_listen.yaml)
-- [Talk 1.4.0 central contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_talk.yaml)
-- [Look 1.4.0 central contract](https://github.com/PatMartin/opal-api/blob/main/openapi/opal_look.yaml)
-
-**Important:** a published contract version is not always the version running inside a service. At this writing, Listen's service-local active YAML reports **1.3.0**, Talk's reports **1.2.0**, and Event's repo identifies its **1.4.0** file as authoritative. Always check the service you have actually started before assuming new contract features work. Look has a central 1.4.0 contract and also a separate [service-repository 1.4.0 design](https://github.com/PatMartin/opal-look/blob/main/opal_look_v1.4.0.yaml); use the central contract for the current suite-level design and reconcile any differences before implementation.
-
-A nice feature of this approach: you can review the promises of a service *before* writing the code.
-
----
-
-## A closer look at each working service
-
-### Listen: a good listener does not need to be a mind reader
-
-Listen handles wakewords, speech-to-text, intent matching, and named details (slots). It can use local Vosk models, with optional refinement, and offers text, recorded-audio, and live-microphone tests.
-
-```bash
-opal listen system devices
-opal listen profiles list
-opal listen intents phrases light_turn_on
-opal listen test listen-debug
-opal listen failed list
-opal listen perf summary
-```
-
-If Listen gets a sentence wrong, inspect failed utterances and recognition logs. Add examples or aliases, then run regression tests. That is more dependable than hoping it gets smarter on its own.
-
-### Talk: a voice with no strings attached
-
-Talk works with installed Piper and Kokoro engines. It manages voice registrations and saved profiles, and produces WAV or raw PCM. You can ask for a completed file or a progressive stream.
-
-```bash
-opal-talk engines validate piper
-opal-talk voices list
-opal-talk profiles list
-opal-talk generate "Systems online." -o ready.wav
-opal-talk health
-```
-
-Talk does not manage speakers or upload model files through its public API. Your playback process handles sound output; the service host needs any referenced voice files.
-
-### Event: the helpful switchboard operator
-
-Event forwards messages, keeps configurable history, matches rules, and runs registered shell, HTTP, or Python actions. It tracks execution outcomes, including failures and dropped jobs.
-
-```bash
-opal-event topics
-opal-event rules list
-opal-event actions list
-opal-event executions list --status failed
-opal-event health --ready
-```
-
-Rules can be tested without action. Actions should be narrowly scoped. Event is the right place to say, “When this trusted message arrives, request that action,” rather than hard-coding every device interaction into your microphone or camera service.
-
----
-
-### Look: eyes with a test pattern for now
-
-Look manages media, analysis profiles, stored results, and snapshots. Synthetic analysis is useful for integration testing but cannot recognize actual objects. Real inference and camera adapters are next.
-
-### Think: a brain with bounded tools
-
-Think runs Ollama or configured external models through tasks, sessions, and streamed answers. It can request enabled Event actions, but does not yet provide universal human approval or automatic rollback. Start with read-only actions.
-
----
-
-## Make it reliable, not merely clever
-
-### Check before you trust
-
-```bash
-opal-event health --ready
-opal-talk health
-opal listen system doctor
-```
-
-These commands must be run from the appropriate service environments. **Live** means a service answers; **ready** means it can do the work you need. A process can be alive while its model, audio device, or broker is broken.
-
-### Keep changes safe
-
-Use this order when editing rules, voices, profiles, and service settings:
-
-1. Check what is running, and export or back up important settings.
-2. Change one thing at a time.
-3. Validate or dry-run where supported.
-4. Confirm the actual behavior.
-5. Check logs, history, and results; roll back if needed.
-
-OPAL uses revision checking in parts of its API so that two tools do not silently overwrite each other's changes. You may see **ETag** and **If-Match** in the deeper docs. Think of them as “only save this if nobody changed it since I last looked.”
-
-### Follow a problem across services
-
-OPAL's contract design includes session, transaction, request, and causation IDs. They help answer four different questions: Which conversation? Which overall task? Which individual network request? Which earlier event caused this one?
-
-Those IDs are for *tracing*, not for granting permission. Verify actual propagation when joining services with different contract versions.
-
-### Respect the network boundary
-
-Keep development APIs and event sockets on a trusted machine or LAN. Do not expose unauthenticated services directly to the internet. Limit the destinations actions may call, restrict file access, protect secrets, and be careful with cameras and microphones. If a remote vision or LLM provider is enabled, content may leave the local network.
-
-### Tests are part of the product
-
-The projects include Python tests and contract checks. Typical development commands include:
-
-```bash
-# Event
-cd ~/opal-suite/opal-event
-.venv/bin/python -m pytest
-
-# Listen
-cd ~/opal-suite/opal-listen
-.venv/bin/python -m pytest -m 'not vosk' -q
-
-# Talk
-cd ~/opal-suite/opal-talk
-make test
-
-# Look and Think
-cd ~/opal-suite/opal-look
-.venv/bin/python -m pytest
-
-cd ~/opal-suite/opal-think
-.venv/bin/python -m pytest
-
-# Validate the shared REST contracts (install Node dependencies first).
-cd ~/opal-suite/opal-api
-npm ci
-npm run check
-```
-
-The goal is not just “the code runs.” The goal is “the CLI and web app do what the contract promises, errors are clear, and nothing surprises you when something fails.”
-
----
-
-## What's next?
-
-All five services now have implementations. The next challenge is connecting them reliably without pretending every adapter or safeguard is finished.
-
-**Finish the eyes:** add real vision inference, camera/RTSP capture, and video decoding to Look.
-
-**Make the brain safer:** extend Think's bounded Event tool path with evidence gathering, simulation, risk review, explicit human approval, verification, and rollback.
-
-**Connect the family:** build runnable Listen → Think → Event → Look → Talk examples, improve shared installation and CLI discovery, and verify cross-service tracing.
-
-**Keep promises testable:** align implementations with the published contracts and expand regression tests, evalsets, and conformance checks.
-
-The best future feature is not “AI can do anything.” It is **“AI can help with more things while you can still understand and control it.”**
-
----
-
-## Where to go deeper
-
-| Want to… | Read this |
+| Repository | What it does |
 | --- | --- |
-| Learn the whole speech-recognition CLI | [Listen command reference](https://github.com/PatMartin/opal-listen/blob/main/docs/CLI.md) |
-| Set up microphones and Vosk | [Listen quick start](https://github.com/PatMartin/opal-listen/blob/main/docs/QUICKSTART.md) |
-| Configure voices, profiles, or streaming | [Talk user guide](https://github.com/PatMartin/opal-talk/blob/main/docs/USER_GUIDE.md) |
-| Build Event rules or actions | [Event command reference](https://github.com/PatMartin/opal-event/blob/main/docs/CLI.md) |
-| Understand the Event message protocol | [ZeroMQ protocol](https://github.com/PatMartin/opal-event/blob/main/specs/zeromq_protocol.md) |
-| Run Look and explore synthetic analysis | [Look guide](https://github.com/PatMartin/opal-look) |
-| Configure Think models, tasks, and tools | [Think guide](https://github.com/PatMartin/opal-think) |
-| Check the official REST contracts | [opal-api](https://github.com/PatMartin/opal-api) |
-| Explore the repositories | [PatMartin on GitHub](https://github.com/PatMartin?tab=repositories) |
+| [opal-listen](https://github.com/PatMartin/opal-listen) | Recognize speech, match wakewords and intents, extract slots, and run local reactions. |
+| [opal-say](https://github.com/PatMartin/opal-say) | Generate speech with Piper or Kokoro. Use voices, profiles, and personas to pick how it sounds. |
+| [opal-look](https://github.com/PatMartin/opal-look) | Manage vision sources and pipelines, analyze images, and work with observations and media. |
+| [opal-event](https://github.com/PatMartin/opal-event) | Publish events, match rules, execute registered actions, and inspect what ran. |
+| [opal-think](https://github.com/PatMartin/opal-think) | Send tasks to Ollama or OpenAI, keep conversation sessions, and call configured Event actions. |
+| [opal-api](https://github.com/PatMartin/opal-api) | Read the OpenAPI 3.1 contracts and shared kernel for all five services. |
 
-## The short version
+## Setup
 
-You do not have to build a giant assistant on day one.
+Use Python 3.12 and [uv](https://docs.astral.sh/uv/). Clone the service you want to try and open its checkout in two terminals. Run its setup and service start in one terminal, then run the client examples in the other. Run every command on its own. Where a command uses an ID such as `TASK_ID`, paste the value returned by the preceding command.
 
-**Start with a voice. Add ears. Wire up one useful event. Test it. Then try synthetic sight and a bounded AI task. Add real-world adapters carefully.**
+Each checkout owns its own `opal` entry point. Running `uv run` inside the corresponding checkout keeps the environments separate. Use the service-specific help to see what your checkout exposes.
 
-OPAL is about owning the pieces, understanding the behavior, and having fun building something that actually helps.
+The examples use local development endpoints. Listen and Look both default to port 8000, so run them one at a time or move Look to another port and pass the same endpoint to its client.
 
-**Your hardware. Your models. Your rules. Your AI.**
+## Listen: test a voice command
 
----
+In the Listen checkout, install the package and start the service. Download and extract the [small US English Vosk model](https://alphacephei.com/vosk/models) first. Replace the example path with the extracted model directory.
 
-*Updated November 2, 2026. A synthetic result is not real recognition, and a planned approval gate is not an implemented safeguard. For exact behavior, the current service code and matching contract take precedence.*
+```console
+uv sync
+OPAL_LISTENER_VOSK_MODEL_PATH=/absolute/path/to/vosk-model-small-en-us-0.15 uv run opal-listen-svc
+```
+
+Test the built-in kitchen-light intent as text, then replay a fixture WAV through speech recognition. The text test is useful when you're editing phrases and want to isolate intent matching from microphone quality.
+
+```console
+uv run opal listen service ping
+uv run opal listen service doctor
+uv run opal listen wakeword list
+uv run opal listen intent list
+uv run opal listen intent get light_turn_on
+uv run opal listen slot values room_name
+uv run opal listen test text "computer, turn on the kitchen light" --expect-intent light_turn_on
+uv run opal listen test audio resources/cmds/cmd-kitchen-lights-on.wav
+uv run opal listen test regression
+```
+
+On Debian, Ubuntu, or Raspberry Pi OS, install `libportaudio2` for live microphone use. With a microphone attached to the service host, check the devices and listen for 20 seconds. Use the logs and performance summary to investigate a miss.
+
+```console
+uv run opal listen service devices
+uv run opal listen test listen-debug --duration 20
+uv run opal listen log list --no-match --limit 10
+uv run opal listen service perf summary
+```
+
+### Trigger a local reaction
+
+Run these commands in the same configuration environment as the Listen service. Reaction commands edit its local `reactions.yaml`. The test below checks the match without executing the action. To try live dispatch, enable reactions and speak the command into the microphone. This example uses `/bin/echo` on Linux.
+
+```console
+uv run opal listen reaction add kitchen-demo --cond "intent_name eq light_turn_on" --run "/bin/echo Kitchen light requested"
+uv run opal listen reaction test --text "computer, turn on the kitchen light"
+uv run opal listen setting set reactions_enabled true
+uv run opal listen test listen --duration 20
+uv run opal listen reaction log
+uv run opal listen reaction remove kitchen-demo
+```
+
+## Say: make a WAV file
+
+In the Say checkout, install Piper support. Download the matching `en_US-amy-low.onnx` and `en_US-amy-low.onnx.json` files to `~/piper/voices` on the service host. See [Say model setup](https://github.com/PatMartin/opal-say#2-install-at-least-one-voice-model) for links and Kokoro setup.
+
+```console
+uv sync --extra piper
+uv run --extra piper opal-say-svc
+```
+
+The catalog ID is `en-us-amy-low`. Validate it before generating audio. Open the WAV files in your audio player to compare the two speeds.
+
+```console
+uv run --extra piper opal say info ready
+uv run --extra piper opal say engine list
+uv run --extra piper opal say engine validate piper
+uv run --extra piper opal say voice list --engine piper
+uv run --extra piper opal say voice validate en-us-amy-low
+uv run --extra piper opal say generate "Welcome to the workshop." --voice en-us-amy-low --format wav --output welcome.wav
+uv run --extra piper opal say generate "Welcome to the workshop." --voice en-us-amy-low --speed 0.85 --format wav --output welcome-slow.wav
+uv run --extra piper opal say profile list
+uv run --extra piper opal say persona list
+```
+
+## Look: test a vision pipeline
+
+In the Look checkout, use Python 3.12. Use an editable checkout so the client can import its CLI package from `src`. Add PyYAML to the run environment for YAML configuration support. Port 8002 keeps this example separate from Listen.
+
+```console
+OPAL_LOOK_PORT=8002 uv run --python 3.12 --with PyYAML opal serve
+```
+
+Put a JPG named `sample.jpg` in the Look checkout. Use the built-in synthetic model to exercise the pipeline and inspect persisted observations. Synthetic labels are test data. For RTSP capture and the limits of trained-model inference and live viewing, see [Look's capability notes](https://github.com/PatMartin/opal-look#current-capabilities-and-known-limitations).
+
+```console
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 info health ready
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 engines list
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 models list
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 pipelines add --body '{"id":"lab","name":"Image lab","model_id":"synthetic-vision","task":"detection","retention":{"persist_observations":true,"ttl_seconds":3600}}'
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 analyze image sample.jpg --request '{"pipeline_id":"lab"}'
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 observations list
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 media upload sample.jpg --ttl 3600
+uv run --with PyYAML opal look --url http://127.0.0.1:8002 media list
+```
+
+## Event: turn a message into an action
+
+In the Event checkout, create a new file named `demo-event.yaml` with the following contents. The server uses its default local endpoint on port 8080. The demo registers a Linux executable and a rule in this configuration.
+
+```yaml
+persistence:
+  database: ./demo-event.sqlite3
+```
+
+Start the service with that file.
+
+```console
+uv sync
+uv run opal-event-svc --config demo-event.yaml
+```
+
+Check health, register the action and rule, then dry-run the rule. Publishing the event triggers the action. The execution history can take a moment to show the result.
+
+```console
+uv run opal event info health --ready
+uv run opal event actions create --json '{"id":"demo_greet","type":"shell","enabled":true,"mode":"exec","executable":"/bin/echo","args":["Hello, {{data.name}}!"],"stdin":"none","timeout_seconds":10}'
+uv run opal event rules create --json '{"id":"demo_greeting_rule","enabled":true,"topic":"demo.greeting","conditions":[{"path":"data.name","operator":"exists","value":true}],"actions":["demo_greet"]}'
+uv run opal event rules test demo_greeting_rule --event-json '{"topic":"demo.greeting","data":{"name":"Ada"}}'
+uv run opal event publish demo.greeting --source workshop --data-json '{"name":"Ada"}'
+uv run opal event list --topic demo.greeting
+uv run opal event executions list --rule-id demo_greeting_rule
+uv run opal event info stats
+uv run opal event backup export --output event-backup.json
+uv run opal event backup validate --file event-backup.json
+```
+
+## Think: ask a model and track its work
+
+Start Ollama with a downloaded model before trying the reasoning commands. Think uses local Ollama by default at `http://127.0.0.1:11434`. See [Think setup](https://github.com/PatMartin/opal-think#quick-start) to point it at another host.
+
+```console
+uv sync
+uv run opal-think-svc
+```
+
+Make a one-off request, then try a task you can inspect independently. Replace `TASK_ID` with the ID printed by `task create`.
+
+```console
+uv run opal think health --ready
+uv run opal think model list
+uv run opal think ask "Explain what an event rule does in one sentence."
+uv run opal think task create "Give me three names for a workshop voice assistant." --detach --timeout 60
+uv run opal think task watch TASK_ID
+uv run opal think task show TASK_ID
+uv run opal think task list
+```
+
+Use a session for follow-up questions. Paste the ID returned by `session add` into both requests.
+
+```console
+uv run opal think session add --title "Workshop assistant"
+uv run opal think ask "My assistant is called Ada. Give her a one-line greeting." --session-id SESSION_ID
+uv run opal think ask "Make that greeting shorter." --session-id SESSION_ID
+uv run opal think session show SESSION_ID
+```
+
+## Combine services
+
+- **Listen → Event.** [Configure Listen's Event endpoint](https://github.com/PatMartin/opal-listen#use-case-11-connect-voice-recognition-to-opal-event), then enable publication with `uv run opal listen setting set event_publication_enabled true` in the Listen checkout. Speak a command with its mic pipeline running. In the Event checkout, run `uv run opal event list --topic opal.listen.intent.match` before wiring a rule to that topic.
+- **Think → Say.** Run `uv run opal think ask "Write a short welcome for my workshop."` in the Think checkout. Paste the response as the text argument to `opal say generate` in the Say checkout. This makes it easy to adjust the prompt and voice independently.
+- **Think → Event.** Think can call enabled, registered Event actions when the integration is configured. Put the actual operation and its input constraints in the Event action. See [Think's execution semantics](https://github.com/PatMartin/opal-think#semantics).
+- **Persona → voice.** The shared v1.6.0 persona contract defines a named identity with an optional voice binding outside Say. In Say, list configured personas with `uv run --extra piper opal say persona list` and pass a configured persona ID with `uv run --extra piper opal say generate "I'm ready." --persona PERSONA_ID --output ready.wav`. Each service manages its own persona records.
+
+## API and more examples
+
+The five reference contracts and the shared kernel currently use **v1.6.0**. The kernel defines common errors, correlation headers, service identity, personas, and configuration concurrency conventions. Use the service's own `--help` and its pinned OpenAPI file when checking CLI syntax or HTTP behavior.
+
+- [Reference OpenAPI contracts](https://github.com/PatMartin/opal-api/tree/main/openapi)
+- [OPAL API cookbooks](https://github.com/PatMartin/opal-api/tree/main/docs)
+- [Voice testing cookbook](docs/VOICE_TESTING_COOKBOOK.md) for additional workflow ideas. Use each service's current CLI help to check the cookbook syntax.
